@@ -9,9 +9,11 @@
     "db:migrate": "pnpm --filter @quiz-app/db migrate",
     "db:seed": "pnpm --filter @quiz-app/api-server seed",
     "dev:api": "pnpm --filter @quiz-app/api-server dev",
+    "dev:frontend": "pnpm --filter @quiz-app/frontend dev",
     "dev:game": "pnpm --filter @quiz-app/game-server dev",
     "dev:worker": "pnpm --filter @quiz-app/worker-server dev",
     "lint": "pnpm -r lint",
+    "reset:local": "powershell -ExecutionPolicy Bypass -File ./scripts/reset-local.ps1",
     "test:socket-client": "dotenv -e .env -- tsx scripts/socket-test-client.ts"
   },
   "devDependencies": {

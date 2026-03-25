@@ -12,9 +12,22 @@ import { redis } from "./lib/redis.js";
 
 export async function buildApp() {
   const app = Fastify({ logger: true });
+  const allowedOrigins = new Set(config.frontendUrls);
 
   await app.register(cors, {
-    origin: config.frontendUrl,
+    origin(origin, callback) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      if (allowedOrigins.has(origin)) {
+        callback(null, origin);
+        return;
+      }
+
+      callback(new Error(`Origin ${origin} is not allowed by CORS`), false);
+    },
     credentials: true
   });
   await app.register(cookie);

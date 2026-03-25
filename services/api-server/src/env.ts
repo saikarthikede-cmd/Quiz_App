@@ -1,9 +1,24 @@
 const toNumber = (value: string | undefined, fallback: number) =>
   value ? Number(value) : fallback;
 
+const parseOrigins = (...values: Array<string | undefined>) =>
+  values
+    .flatMap((value) => (value ?? "").split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
+
 export const config = {
   apiPort: toNumber(process.env.API_PORT, 4000),
   frontendUrl: process.env.FRONTEND_URL ?? "http://localhost:3000",
+  frontendUrls: [
+    ...new Set(
+      parseOrigins(
+        process.env.FRONTEND_URL,
+        process.env.FRONTEND_URLS,
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
+      )
+    )
+  ],
   jwtSecret: process.env.JWT_SECRET ?? "replace_me",
   jwtIssuer: process.env.JWT_ISSUER ?? "quiz-app",
   jwtAudience: process.env.JWT_AUDIENCE ?? "quiz-app-users",

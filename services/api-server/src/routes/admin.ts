@@ -39,6 +39,26 @@ const amountSchema = z.object({
 });
 
 export async function adminRoutes(app: FastifyInstance) {
+  app.get("/admin/users", { preHandler: requireAdmin }, async () => {
+    const result = await pool.query<{
+      id: string;
+      email: string;
+      name: string;
+      wallet_balance: string;
+      is_admin: boolean;
+      is_banned: boolean;
+      created_at: string;
+    }>(
+      `
+        SELECT id, email, name, wallet_balance, is_admin, is_banned, created_at
+        FROM users
+        ORDER BY created_at ASC
+      `
+    );
+
+    return { users: result.rows };
+  });
+
   app.get("/admin/contests", { preHandler: requireAdmin }, async () => {
     const result = await pool.query<{
       id: string;

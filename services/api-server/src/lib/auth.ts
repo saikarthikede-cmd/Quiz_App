@@ -1,0 +1,205 @@
+import { createHash, randomBytes } from "node:crypto";
+
+import type { FastifyReply, FastifyRequest } from "fastify";
+import { SignJWT, jwtVerify } from "jose";
+
+import { pool, withTransaction } from "@quiz-app/db";
+
+import { config } from "../env.js";
+
+const REFRESH_COOKIE = "quiz_refresh_token";
+const jwtKey = new TextEncoder().encode(config.jwtSecret);
+
+interface SessionUser {
+  id: string;
+  email: string;
+  is_admin: boolean;
+  is_banned: boolean;
+}
+
+export function getRefreshCookieName() {
+  return REFRESH_COOKIE;
+}
+
+export function hashRefreshToken(rawToken: string) {
+  return createHash("sha256").update(rawToken).digest("hex");
+}
+
+export async function issueAccessToken(user: SessionUser) {
+  return new SignJWT({
+    user_id: user.id,
+    email: user.email,
+    is_banned: user.is_banned,
+    is_admin: user.is_admin
+  })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setIssuer(config.jwtIssuer)
+    .setAudience(config.jwtAudience)
+    .setExpirationTime(`${config.accessTokenTtlMinutes}m`)
+    .sign(jwtKey);
+}
+
+export async function verifyAccessToken(token: string) {
+  const { payload } = await jwtVerify(token, jwtKey, {
+    issuer: config.jwtIssuer,
+    audience: config.jwtAudience
+  });
+
+  return {
+    userId: String(payload.user_id)
+  };
+}
+
+export async function createSession(user: SessionUser) {
+  const rawRefreshToken = randomBytes(32).toString("hex");
+  const refreshTokenHash = hashRefreshToken(rawRefreshToken);
+  const expiresAt = new Date(Date.now() + config.refreshTokenTtlDays * 24 * 60 * 60 * 1000);
+
+  await withTransaction(async (client) => {
+    await client.query(
+      "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
+      [user.id, refreshTokenHash, expiresAt]
+    );
+  });
+
+  return {
+    accessToken: await issueAccessToken(user),
+    refreshToken: rawRefreshToken
+  };
+}
+
+export async function refreshSession(rawRefreshToken: string) {
+  const refreshTokenHash = hashRefreshToken(rawRefreshToken);
+
+  return withTransaction(async (client) => {
+    const tokenResult = await client.query<{
+      id: string;
+      user_id: string;
+      expires_at: string;
+      revoked_at: string | null;
+      email: string;
+      is_admin: boolean;
+      is_banned: boolean;
+    }>(
+      `
+        SELECT
+          rt.id,
+          rt.user_id,
+          rt.expires_at,
+          rt.revoked_at,
+          u.email,
+          u.is_admin,
+          u.is_banned
+        FROM refresh_tokens rt
+        JOIN users u ON u.id = rt.user_id
+        WHERE rt.token_hash = $1
+        LIMIT 1
+      `,
+      [refreshTokenHash]
+    );
+
+    if (tokenResult.rowCount !== 1) {
+      return null;
+    }
+
+    const tokenRow = tokenResult.rows[0];
+
+    if (tokenRow.revoked_at || new Date(tokenRow.expires_at).getTime() < Date.now()) {
+      return null;
+    }
+
+    const nextRawToken = randomBytes(32).toString("hex");
+    const nextTokenHash = hashRefreshToken(nextRawToken);
+    const nextExpiresAt = new Date(Date.now() + config.refreshTokenTtlDays * 24 * 60 * 60 * 1000);
+
+    await client.query("UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = $1", [tokenRow.id]);
+    await client.query(
+      "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
+      [tokenRow.user_id, nextTokenHash, nextExpiresAt]
+    );
+
+    return {
+      accessToken: await issueAccessToken({
+        id: tokenRow.user_id,
+        email: tokenRow.email,
+        is_admin: tokenRow.is_admin,
+        is_banned: tokenRow.is_banned
+      }),
+      refreshToken: nextRawToken
+    };
+  });
+}
+
+export async function revokeRefreshToken(rawRefreshToken: string) {
+  const refreshTokenHash = hashRefreshToken(rawRefreshToken);
+  await pool.query(
+    "UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = $1 AND revoked_at IS NULL",
+    [refreshTokenHash]
+  );
+}
+
+export function setRefreshCookie(reply: FastifyReply, rawRefreshToken: string) {
+  reply.setCookie(REFRESH_COOKIE, rawRefreshToken, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: config.cookieSecure,
+    path: "/",
+    domain: config.cookieDomain,
+    expires: new Date(Date.now() + config.refreshTokenTtlDays * 24 * 60 * 60 * 1000)
+  });
+}
+
+export function clearRefreshCookie(reply: FastifyReply) {
+  reply.clearCookie(REFRESH_COOKIE, {
+    path: "/",
+    domain: config.cookieDomain
+  });
+}
+
+export async function authenticate(request: FastifyRequest, reply: FastifyReply) {
+  const authHeader = request.headers.authorization;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : null;
+
+  if (!token) {
+    return reply.code(401).send({ message: "Missing Bearer token" });
+  }
+
+  try {
+    const payload = await verifyAccessToken(token);
+    const userResult = await pool.query<FastifyRequest["user"]>(
+      `
+        SELECT id, email, name, avatar_url, wallet_balance, is_admin, is_banned
+        FROM users
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [payload.userId]
+    );
+
+    if (userResult.rowCount !== 1) {
+      return reply.code(401).send({ message: "User not found" });
+    }
+
+    if (userResult.rows[0].is_banned) {
+      return reply.code(403).send({ message: "User account is banned" });
+    }
+
+    request.user = userResult.rows[0];
+  } catch (error) {
+    request.log.warn({ err: error }, "Access token verification failed");
+    return reply.code(401).send({ message: "Invalid or expired access token" });
+  }
+}
+
+export async function requireAdmin(request: FastifyRequest, reply: FastifyReply) {
+  const authResult = await authenticate(request, reply);
+
+  if (authResult) {
+    return authResult;
+  }
+
+  if (!request.user.is_admin) {
+    return reply.code(403).send({ message: "Admin access required" });
+  }
+}

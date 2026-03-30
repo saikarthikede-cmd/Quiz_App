@@ -19,6 +19,7 @@
     "@quiz-app/redis": "workspace:*",
     "@quiz-app/types": "workspace:*",
     "fastify": "^5.6.1",
+    "google-auth-library": "^10.6.2",
     "jose": "^6.1.0",
     "zod": "^4.1.11"
   }

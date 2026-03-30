@@ -6,7 +6,7 @@ interface WalletMutationInput {
   userId: string;
   amountPaise: number;
   type: "credit" | "debit";
-  reason: "entry_fee" | "prize" | "refund" | "topup" | "manual_topup";
+  reason: "entry_fee" | "prize" | "refund" | "topup" | "redeem";
   referenceId?: string | null;
   metadata?: Record<string, unknown>;
 }

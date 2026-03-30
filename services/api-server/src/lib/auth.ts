@@ -17,6 +17,10 @@ interface SessionUser {
   is_banned: boolean;
 }
 
+type TransactionClient = {
+  query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[]; rowCount: number | null }>;
+};
+
 export function getRefreshCookieName() {
   return REFRESH_COOKIE;
 }
@@ -51,17 +55,24 @@ export async function verifyAccessToken(token: string) {
   };
 }
 
-export async function createSession(user: SessionUser) {
+export async function createSession(user: SessionUser, client?: TransactionClient) {
   const rawRefreshToken = randomBytes(32).toString("hex");
   const refreshTokenHash = hashRefreshToken(rawRefreshToken);
   const expiresAt = new Date(Date.now() + config.refreshTokenTtlDays * 24 * 60 * 60 * 1000);
 
-  await withTransaction(async (client) => {
+  if (client) {
     await client.query(
       "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
       [user.id, refreshTokenHash, expiresAt]
     );
-  });
+  } else {
+    await withTransaction(async (transactionClient) => {
+      await transactionClient.query(
+        "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
+        [user.id, refreshTokenHash, expiresAt]
+      );
+    });
+  }
 
   return {
     accessToken: await issueAccessToken(user),

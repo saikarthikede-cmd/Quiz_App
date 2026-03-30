@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (type IN ('credit', 'debit')),
-  CHECK (reason IN ('entry_fee', 'prize', 'refund', 'topup', 'manual_topup')),
+  CHECK (reason IN ('entry_fee', 'prize', 'refund', 'topup', 'manual_topup', 'redeem')),
   CHECK (amount > 0)
 );
 

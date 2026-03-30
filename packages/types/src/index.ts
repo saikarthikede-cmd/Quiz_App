@@ -6,7 +6,7 @@ export type WalletTransactionReason =
   | "prize"
   | "refund"
   | "topup"
-  | "manual_topup";
+  | "redeem";
 export type QuestionOption = "a" | "b" | "c" | "d";
 
 export interface User {
@@ -78,4 +78,15 @@ export interface WalletTransaction {
   balance_after: string;
   reference_id: string | null;
   created_at: string;
+}
+
+export interface WalletTopupRequest {
+  id: string;
+  user_id: string;
+  amount: string;
+  status: "pending" | "approved" | "rejected";
+  created_at: string;
+  updated_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
 }

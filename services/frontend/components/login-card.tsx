@@ -1,16 +1,57 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { loginWithEmail } from "../lib/api";
+import { getGoogleConfig, loginWithGoogle } from "../lib/api";
 import { setStoredSession } from "../lib/session";
 
-const demoUsers = [
-  { email: "player.one@gmail.com", name: "Player One" },
-  { email: "player.two@gmail.com", name: "Player Two" },
-  { email: "admin.quiz@gmail.com", name: "Quiz Admin" }
-];
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (options: {
+            client_id: string;
+            callback: (response: { credential?: string }) => void;
+          }) => void;
+          renderButton: (
+            element: HTMLElement,
+            options: Record<string, string | number | boolean>
+          ) => void;
+        };
+      };
+    };
+  }
+}
+
+function loadGoogleScript() {
+  return new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>('script[data-google-identity="true"]');
+
+    if (existing) {
+      if (window.google?.accounts?.id) {
+        resolve();
+        return;
+      }
+
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener("error", () => reject(new Error("Could not load Google sign-in")), {
+        once: true
+      });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.dataset.googleIdentity = "true";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Could not load Google sign-in"));
+    document.head.appendChild(script);
+  });
+}
 
 export function LoginCard({
   onSuccess,
@@ -20,78 +61,146 @@ export function LoginCard({
   targetHref?: string;
 }) {
   const router = useRouter();
-  const [email, setEmail] = useState("player.one@gmail.com");
-  const [name, setName] = useState("Player One");
+  const googleButtonRef = useRef<HTMLDivElement | null>(null);
+  const [googleClientId, setGoogleClientId] = useState<string | null>(null);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [googleReady, setGoogleReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [googlePending, setGooglePending] = useState(false);
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
+  function completeLogin(result: Awaited<ReturnType<typeof loginWithGoogle>>) {
+    setStoredSession({
+      accessToken: result.access_token,
+      email: result.user.email,
+      name: result.user.name,
+      userId: result.user.id,
+      isAdmin: result.user.is_admin
+    });
 
-    startTransition(async () => {
+    onSuccess?.();
+    const nextHref = result.user.is_admin && targetHref === "/dashboard" ? "/admin" : targetHref;
+
+    router.replace(nextHref);
+    window.setTimeout(() => {
+      router.refresh();
+    }, 80);
+  }
+
+  useEffect(() => {
+    let active = true;
+
+    void (async () => {
       try {
-        const result = await loginWithEmail(email, name);
+        const config = await getGoogleConfig();
 
-        setStoredSession({
-          accessToken: result.access_token,
-          email: result.user.email,
-          name: result.user.name,
-          userId: result.user.id,
-          isAdmin: result.user.is_admin
+        if (!active) {
+          return;
+        }
+
+        setGoogleEnabled(config.enabled && Boolean(config.client_id));
+        setGoogleClientId(config.client_id);
+      } catch {
+        if (active) {
+          setGoogleEnabled(false);
+          setGoogleClientId(null);
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!googleEnabled || !googleClientId) {
+      return;
+    }
+
+    let active = true;
+
+    void (async () => {
+      try {
+        await loadGoogleScript();
+
+        if (!active || !window.google?.accounts?.id) {
+          return;
+        }
+
+        window.google.accounts.id.initialize({
+          client_id: googleClientId,
+          callback: ({ credential }) => {
+            if (!credential) {
+              setError("Google sign-in did not return a credential.");
+              return;
+            }
+
+            setError(null);
+            setGooglePending(true);
+
+            void (async () => {
+              try {
+                const result = await loginWithGoogle(credential);
+                completeLogin(result);
+              } catch (loginError) {
+                setError(loginError instanceof Error ? loginError.message : "Google sign-in failed");
+              } finally {
+                setGooglePending(false);
+              }
+            })();
+          }
         });
 
-        onSuccess?.();
-        router.push(result.user.is_admin && targetHref === "/dashboard" ? "/admin" : targetHref);
-        router.refresh();
-      } catch (loginError) {
-        setError(loginError instanceof Error ? loginError.message : "Login failed");
+        setGoogleReady(true);
+      } catch (scriptError) {
+        if (active) {
+          setError(scriptError instanceof Error ? scriptError.message : "Google sign-in is unavailable");
+        }
       }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [googleClientId, googleEnabled]);
+
+  useEffect(() => {
+    if (!googleReady || !googleButtonRef.current || !window.google?.accounts?.id) {
+      return;
+    }
+
+    googleButtonRef.current.innerHTML = "";
+    window.google.accounts.id.renderButton(googleButtonRef.current, {
+      type: "standard",
+      theme: "filled_blue",
+      size: "large",
+      text: "continue_with",
+      shape: "pill",
+      width: "360"
     });
-  }
+  }, [googleReady]);
 
   return (
     <div className="login-card">
-      <div className="eyebrow">Temporary Email Auth</div>
+      <div className="eyebrow">Let&apos;s Get Going</div>
       <h2 className="section-title" style={{ marginTop: 14 }}>
-        Sign in to the local build
+        Sign in and step into the next round
       </h2>
       <p className="muted">
-        Google OAuth is intentionally swapped with email login until company credentials are
-        available.
+        Use your Google account for a faster entry into contests, wallets, and the live quiz floor.
       </p>
 
-      <form onSubmit={handleSubmit}>
-        <label className="field">
-          <span>Email</span>
-          <input value={email} onChange={(event) => setEmail(event.target.value)} />
-        </label>
-
-        <label className="field">
-          <span>Name</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} />
-        </label>
-
-        <div className="stack-row" style={{ marginBottom: 16 }}>
-          {demoUsers.map((user) => (
-            <button
-              key={user.email}
-              type="button"
-              className="ghost-button"
-              onClick={() => {
-                setEmail(user.email);
-                setName(user.name);
-              }}
-            >
-              {user.name}
-            </button>
-          ))}
+      {googleEnabled ? (
+        <div className="google-auth-block">
+          <div className="muted-label">Continue with Google</div>
+          <div ref={googleButtonRef} className="google-button-slot" />
+          {googlePending ? <div className="notice">Signing you in with Google...</div> : null}
         </div>
-
-        <button type="submit" className="solid-button" disabled={isPending}>
-          {isPending ? "Signing in..." : "Continue"}
-        </button>
-      </form>
+      ) : (
+        <div className="notice warn" style={{ marginBottom: 16 }}>
+          Google sign-in is temporarily unavailable right now. Please check the configuration and try again.
+        </div>
+      )}
 
       {error ? (
         <div className="notice error" style={{ marginTop: 14 }}>

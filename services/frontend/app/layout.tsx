@@ -14,7 +14,7 @@ const body = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "Quiz Arena",
+  title: "Quiz Master",
   description: "Mobile-first real-time quiz contest platform"
 };
 

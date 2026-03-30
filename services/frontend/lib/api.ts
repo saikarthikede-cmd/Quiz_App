@@ -11,6 +11,20 @@ export interface LoginResponse {
   };
 }
 
+export interface OtpRequestResponse {
+  success: boolean;
+  mode: string;
+  delivery: string;
+  expires_in_seconds: number;
+  comment: string;
+  dev_otp?: string;
+}
+
+export interface GoogleConfigResponse {
+  enabled: boolean;
+  client_id: string | null;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit, accessToken?: string): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -48,16 +62,85 @@ export function loginWithEmail(email: string, name: string) {
   });
 }
 
+export function getGoogleConfig() {
+  return apiFetch<GoogleConfigResponse>("/auth/google/config");
+}
+
+export function loginWithGoogle(idToken: string) {
+  return apiFetch<LoginResponse>("/auth/google", {
+    method: "POST",
+    body: JSON.stringify({ id_token: idToken })
+  });
+}
+
+export function requestOtp(email: string, name: string) {
+  return apiFetch<OtpRequestResponse>("/auth/request-otp", {
+    method: "POST",
+    body: JSON.stringify({ email, name })
+  });
+}
+
+export function verifyOtp(email: string, otp: string) {
+  return apiFetch<LoginResponse>("/auth/verify-otp", {
+    method: "POST",
+    body: JSON.stringify({ email, otp })
+  });
+}
+
 export function getWalletBalance(accessToken: string) {
   return apiFetch<{ wallet_balance: string }>("/wallet/balance", undefined, accessToken);
 }
 
-export function addMoney(accessToken: string, amount: number) {
-  return apiFetch<{ success: boolean; wallet_balance: string }>(
+export function getWalletLedger(accessToken: string) {
+  return apiFetch<{
+    ledger: Array<{
+      id: string;
+      type: "credit" | "debit";
+      reason: string;
+      amount: string;
+      balance_before: string;
+      balance_after: string;
+      reference_id: string | null;
+      metadata?: Record<string, unknown> | null;
+      created_at: string;
+    }>;
+  }>("/wallet/ledger", undefined, accessToken);
+}
+
+export function requestAddMoney(accessToken: string, amount: number) {
+  return apiFetch<{
+    success: boolean;
+    message: string;
+    request: {
+      id: string;
+      amount: string;
+      status: "pending";
+      created_at: string;
+    };
+  }>(
     "/wallet/add-money",
     {
       method: "POST",
       body: JSON.stringify({ amount })
+    },
+    accessToken
+  );
+}
+
+export function redeemMoney(
+  accessToken: string,
+  payload: {
+    amount: number;
+    holder_name: string;
+    bank_name: string;
+    account_number: string;
+  }
+) {
+  return apiFetch<{ success: boolean; wallet_balance: string }>(
+    "/wallet/redeem",
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
     },
     accessToken
   );
@@ -243,6 +326,44 @@ export function creditUserWallet(accessToken: string, userId: string, amount: nu
     {
       method: "POST",
       body: JSON.stringify({ amount })
+    },
+    accessToken
+  );
+}
+
+export function getAdminWalletRequests(accessToken: string) {
+  return apiFetch<{
+    requests: Array<{
+      id: string;
+      user_id: string;
+      amount: string;
+      status: "pending" | "approved" | "rejected";
+      created_at: string;
+      updated_at: string;
+      reviewed_at: string | null;
+      reviewed_by: string | null;
+      user_name: string;
+      user_email: string;
+    }>;
+  }>("/admin/wallet-requests", undefined, accessToken);
+}
+
+export function reviewWalletRequest(
+  accessToken: string,
+  requestId: string,
+  status: "approved" | "rejected"
+) {
+  return apiFetch<{
+    success: boolean;
+    status: "approved" | "rejected";
+    request_id: string;
+    user_name: string;
+    wallet_balance?: string;
+  }>(
+    `/admin/wallet-requests/${requestId}/review`,
+    {
+      method: "POST",
+      body: JSON.stringify({ status })
     },
     accessToken
   );

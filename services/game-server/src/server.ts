@@ -22,10 +22,38 @@ const jwtIssuer = process.env.JWT_ISSUER ?? "quiz-app";
 const jwtAudience = process.env.JWT_AUDIENCE ?? "quiz-app-users";
 const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3000";
 
+function isAllowedDevOrigin(origin: string) {
+  try {
+    const url = new URL(origin);
+    const isLocalHost =
+      url.hostname === "localhost" ||
+      url.hostname === "127.0.0.1" ||
+      url.hostname.startsWith("10.") ||
+      url.hostname.startsWith("192.168.") ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(url.hostname);
+
+    return isLocalHost && /^300[0-5]$/.test(url.port);
+  } catch {
+    return false;
+  }
+}
+
 const httpServer = createServer();
 const io = new Server(httpServer, {
   cors: {
-    origin: frontendUrl,
+    origin(origin, callback) {
+      if (!origin || origin === frontendUrl) {
+        callback(null, true);
+        return;
+      }
+
+      if (process.env.NODE_ENV !== "production" && isAllowedDevOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`Origin ${origin} is not allowed by Socket.io CORS`), false);
+    },
     credentials: true
   }
 });

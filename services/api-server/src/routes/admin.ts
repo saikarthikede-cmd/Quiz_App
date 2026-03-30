@@ -38,6 +38,10 @@ const amountSchema = z.object({
   amount: z.number().positive().max(100000)
 });
 
+const walletRequestDecisionSchema = z.object({
+  status: z.enum(["approved", "rejected"])
+});
+
 export async function adminRoutes(app: FastifyInstance) {
   app.get("/admin/users", { preHandler: requireAdmin }, async () => {
     const result = await pool.query<{
@@ -82,6 +86,46 @@ export async function adminRoutes(app: FastifyInstance) {
     );
 
     return { contests: result.rows };
+  });
+
+  app.get("/admin/wallet-requests", { preHandler: requireAdmin }, async () => {
+    const result = await pool.query<{
+      id: string;
+      user_id: string;
+      amount: string;
+      status: "pending" | "approved" | "rejected";
+      created_at: string;
+      updated_at: string;
+      reviewed_at: string | null;
+      reviewed_by: string | null;
+      user_name: string;
+      user_email: string;
+    }>(
+      `
+        SELECT
+          wr.id,
+          wr.user_id,
+          wr.amount,
+          wr.status,
+          wr.created_at,
+          wr.updated_at,
+          wr.reviewed_at,
+          wr.reviewed_by,
+          u.name AS user_name,
+          u.email AS user_email
+        FROM wallet_topup_requests wr
+        INNER JOIN users u ON u.id = wr.user_id
+        ORDER BY
+          CASE wr.status
+            WHEN 'pending' THEN 0
+            WHEN 'approved' THEN 1
+            ELSE 2
+          END,
+          wr.created_at DESC
+      `
+    );
+
+    return { requests: result.rows };
   });
 
   app.post("/admin/contests", { preHandler: requireAdmin }, async (request) => {
@@ -213,6 +257,99 @@ export async function adminRoutes(app: FastifyInstance) {
       success: true,
       wallet_balance: (result.balanceAfterPaise / 100).toFixed(2)
     };
+  });
+
+  app.post("/admin/wallet-requests/:id/review", { preHandler: requireAdmin }, async (request, reply) => {
+    const requestId = String((request.params as { id: string }).id);
+    const body = walletRequestDecisionSchema.parse(request.body);
+
+    const result = await withTransaction(async (client) => {
+      const requestResult = await client.query<{
+        id: string;
+        user_id: string;
+        amount: string;
+        status: "pending" | "approved" | "rejected";
+        user_name: string;
+      }>(
+        `
+          SELECT wr.id, wr.user_id, wr.amount, wr.status, u.name AS user_name
+          FROM wallet_topup_requests wr
+          INNER JOIN users u ON u.id = wr.user_id
+          WHERE wr.id = $1
+          LIMIT 1
+          FOR UPDATE
+        `,
+        [requestId]
+      );
+
+      if (requestResult.rowCount !== 1) {
+        return reply.code(404).send({ message: "Wallet request not found" });
+      }
+
+      const topupRequest = requestResult.rows[0];
+
+      if (topupRequest.status !== "pending") {
+        return reply.code(409).send({ message: "Wallet request has already been reviewed" });
+      }
+
+      if (body.status === "approved") {
+        const walletMutation = await mutateWalletBalance(client, {
+          userId: topupRequest.user_id,
+          amountPaise: Math.round(Number(topupRequest.amount) * 100),
+          type: "credit",
+          reason: "topup",
+          referenceId: topupRequest.id,
+          metadata: {
+            source: "wallet_topup_request",
+            approvedByAdminId: request.user.id,
+            requestId: topupRequest.id
+          }
+        });
+
+        await client.query(
+          `
+            UPDATE wallet_topup_requests
+            SET
+              status = 'approved',
+              reviewed_at = NOW(),
+              reviewed_by = $2,
+              updated_at = NOW()
+            WHERE id = $1
+          `,
+          [requestId, request.user.id]
+        );
+
+        return {
+          success: true,
+          status: "approved" as const,
+          request_id: requestId,
+          user_name: topupRequest.user_name,
+          wallet_balance: (walletMutation.balanceAfterPaise / 100).toFixed(2)
+        };
+      }
+
+      await client.query(
+        `
+          UPDATE wallet_topup_requests
+          SET
+            status = 'rejected',
+            reviewed_at = NOW(),
+            reviewed_by = $2,
+            updated_at = NOW()
+          WHERE id = $1
+        `,
+        [requestId, request.user.id]
+      );
+
+      return {
+        success: true,
+        status: "rejected" as const,
+        request_id: requestId,
+        user_name: topupRequest.user_name
+      };
+    });
+
+    return result;
   });
 
   app.get("/admin/jobs", { preHandler: requireAdmin }, async () => {

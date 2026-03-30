@@ -182,24 +182,35 @@ export default function LiveContestPage() {
   return (
     <SiteShell
       title="Live Contest Room"
-      subtitle="This page is connected to the actual Socket.io game server and follows worker-driven contest events."
+      subtitle="This room listens to the live Socket.io feed, tracks timing from server state, and stays visually focused while the contest advances."
     >
-      <div className="grid two">
-        <div className="card">
+      <div className="room-grid">
+        <div className="room-stage">
           <div className="eyebrow">Contest</div>
+          <h2 className="section-title" style={{ marginTop: 16 }}>
+            {question ? `Question ${question.seq} is on air` : "Stand by for the next broadcast"}
+          </h2>
+          <p className="muted">{status}</p>
           <div className="mono" style={{ marginTop: 14 }}>
             {contestId}
           </div>
-          <p className="muted">{status}</p>
           {socketError ? <div className="notice error">{socketError}</div> : null}
-          <div className="pill-row">
-            <span className="pill gold">Time {Math.ceil(timeRemaining / 1000)}s</span>
-            {answerResult ? (
-              <span className={`pill ${answerResult.is_correct ? "" : "rose"}`}>
-                Score {answerResult.your_score}
-              </span>
-            ) : null}
-            {revealCountdown > 0 ? <span className="pill">Next question in {revealCountdown}s</span> : null}
+          <div className="signal-grid" style={{ marginTop: 18 }}>
+            <div className="signal-card">
+              <div className="signal-label">Timer</div>
+              <div className="signal-value">{Math.ceil(timeRemaining / 1000)}s</div>
+              <div className="signal-subtitle">Synced to server_time from the question payload.</div>
+            </div>
+            <div className="signal-card gold">
+              <div className="signal-label">Score</div>
+              <div className="signal-value">{answerResult?.your_score ?? 0}</div>
+              <div className="signal-subtitle">Updated after the answer_result event returns from the game server.</div>
+            </div>
+            <div className="signal-card rose">
+              <div className="signal-label">Reveal Gap</div>
+              <div className="signal-value">{revealCountdown}s</div>
+              <div className="signal-subtitle">Local three-second countdown before the next live question lands.</div>
+            </div>
           </div>
         </div>
 
@@ -218,6 +229,9 @@ export default function LiveContestPage() {
             <div className="notice">
               Prize if won: <span className="mono">Rs {prizeAmount}</span>
             </div>
+          </div>
+          <div className="hero-note muted">
+            A correct answer is only confirmed privately to this player. The actual correct option is revealed to everyone together after the timer closes.
           </div>
         </div>
       </div>
@@ -279,10 +293,18 @@ export default function LiveContestPage() {
             {youWon ? "You won this round." : "Round complete."}
           </h2>
           <p className="muted">Prize credited: Rs {prizeAmount}</p>
-          <div className="list">
+          <div className="leaderboard-grid">
             {leaderboard.map((entry, index) => (
-              <div key={entry.user_id} className="notice">
-                #{index + 1} {entry.name} | Correct {entry.correct_count} | Prize Rs {entry.prize_amount}
+              <div key={entry.user_id} className="contest-card leaderboard-row">
+                <div className={`rank-badge ${index === 0 ? "gold" : ""}`}>#{index + 1}</div>
+                <div>
+                  <strong>{entry.name}</strong>
+                  <div className="pill-row" style={{ marginTop: 8 }}>
+                    <span className="pill">Correct {entry.correct_count}</span>
+                    {entry.is_winner ? <span className="pill gold">Winner</span> : null}
+                  </div>
+                </div>
+                <div className="pill rose">Prize Rs {entry.prize_amount}</div>
               </div>
             ))}
           </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { LoginCard } from "../../components/login-card";
 import { SiteShell } from "../../components/site-shell";
@@ -12,10 +12,12 @@ import {
   createContest,
   getAdminContests,
   getAdminUsers,
+  getAdminWalletRequests,
   getJobs,
   publishContest,
   rebuildContestCache,
   recoverContest,
+  reviewWalletRequest,
   retryJob
 } from "../../lib/api";
 
@@ -49,13 +51,30 @@ interface AdminUser {
   created_at: string;
 }
 
+interface WalletRequestItem {
+  id: string;
+  user_id: string;
+  amount: string;
+  status: "pending" | "approved" | "rejected";
+  created_at: string;
+  updated_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  user_name: string;
+  user_email: string;
+}
+
 export default function AdminPage() {
   const { session, isReady } = useFrontendSession();
   const [contests, setContests] = useState<AdminContest[]>([]);
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [walletRequests, setWalletRequests] = useState<WalletRequestItem[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showAllContests, setShowAllContests] = useState(false);
+  const [pageLoading, setPageLoading] = useState(false);
+  const latestLoadId = useRef(0);
 
   const [contestForm, setContestForm] = useState({
     title: "Showcase Sprint",
@@ -82,18 +101,26 @@ export default function AdminPage() {
   });
 
   async function loadAdminData(accessToken: string) {
+    const loadId = ++latestLoadId.current;
+    setPageLoading(true);
     setError(null);
 
     try {
-      const [contestResult, jobsResult, usersResult] = await Promise.all([
+      const [contestResult, jobsResult, usersResult, walletRequestsResult] = await Promise.all([
         getAdminContests(accessToken),
         getJobs(accessToken),
-        getAdminUsers(accessToken)
+        getAdminUsers(accessToken),
+        getAdminWalletRequests(accessToken)
       ]);
+
+      if (loadId !== latestLoadId.current) {
+        return;
+      }
 
       setContests(contestResult.contests);
       setJobs(jobsResult.jobs);
       setUsers(usersResult.users);
+      setWalletRequests(walletRequestsResult.requests);
 
       if (!selectedContestId && contestResult.contests.length > 0) {
         setSelectedContestId(contestResult.contests[0].id);
@@ -107,7 +134,15 @@ export default function AdminPage() {
         }));
       }
     } catch (loadError) {
+      if (loadId !== latestLoadId.current) {
+        return;
+      }
+
       setError(loadError instanceof Error ? loadError.message : "Failed to load admin data");
+    } finally {
+      if (loadId === latestLoadId.current) {
+        setPageLoading(false);
+      }
     }
   }
 
@@ -116,15 +151,16 @@ export default function AdminPage() {
       return;
     }
 
-    startTransition(() => {
-      void loadAdminData(session.accessToken);
-    });
+    void loadAdminData(session.accessToken);
   }, [session]);
 
   const selectedContest = useMemo(
     () => contests.find((contest) => contest.id === selectedContestId) ?? null,
     [contests, selectedContestId]
   );
+  const activeJobs = jobs.filter((job) => job.status !== "failed").length;
+  const pendingWalletRequests = walletRequests.filter((request) => request.status === "pending").length;
+  const visibleContests = contests.slice(0, 3);
 
   if (!isReady) {
     return (
@@ -159,14 +195,34 @@ export default function AdminPage() {
   return (
     <SiteShell
       title="Admin Console"
-      subtitle="Create draft contests, attach questions, publish schedules, and watch queue state without touching the backend code directly."
+      subtitle="Create draft contests, attach questions, publish schedules, and monitor queue, cache, and payout paths from one brighter ops-ready control surface."
     >
+      {pageLoading ? <div className="notice">Refreshing admin data...</div> : null}
       {message ? <div className="notice">{message}</div> : null}
       {error ? <div className="notice error" style={{ marginTop: 14 }}>{error}</div> : null}
+
+      <section className="signal-grid" style={{ marginTop: 20 }}>
+        <div className="signal-card">
+          <div className="signal-label">Total Contests</div>
+          <div className="signal-value">{contests.length}</div>
+          <div className="signal-subtitle">Draft, open, live, ended, and cancelled contests tracked through one admin view.</div>
+        </div>
+        <div className="signal-card gold">
+          <div className="signal-label">Queue Activity</div>
+          <div className="signal-value">{activeJobs}</div>
+          <div className="signal-subtitle">Jobs currently active, delayed, or waiting across lifecycle and payouts queues.</div>
+        </div>
+        <div className="signal-card rose">
+          <div className="signal-label">Wallet Requests</div>
+          <div className="signal-value">{pendingWalletRequests}</div>
+          <div className="signal-subtitle">Pending top-up requests waiting for admin approval before balances are credited.</div>
+        </div>
+      </section>
 
       <div className="grid two" style={{ marginTop: 20 }}>
         <div className="card">
           <div className="eyebrow">Create Contest</div>
+          <h3 style={{ marginTop: 16, marginBottom: 10 }}>Spin up a new room with production-style scheduling rules</h3>
           <label className="field">
             <span>Title</span>
             <input
@@ -220,7 +276,7 @@ export default function AdminPage() {
               setMessage(null);
               setError(null);
 
-              startTransition(async () => {
+              void (async () => {
                 try {
                   const result = await createContest(session.accessToken, {
                     title: contestForm.title,
@@ -236,7 +292,7 @@ export default function AdminPage() {
                 } catch (createError) {
                   setError(createError instanceof Error ? createError.message : "Contest creation failed");
                 }
-              });
+              })();
             }}
           >
             Create Contest
@@ -245,6 +301,7 @@ export default function AdminPage() {
 
         <div className="card">
           <div className="eyebrow">Add Question</div>
+          <h3 style={{ marginTop: 16, marginBottom: 10 }}>Build the sequence, then publish from the same panel</h3>
           <label className="field">
             <span>Contest</span>
             <select
@@ -345,7 +402,7 @@ export default function AdminPage() {
                 setMessage(null);
                 setError(null);
 
-                startTransition(async () => {
+                void (async () => {
                   try {
                     const result = await addQuestion(session.accessToken, selectedContestId, {
                       seq: Number(questionForm.seq),
@@ -367,7 +424,7 @@ export default function AdminPage() {
                   } catch (questionError) {
                     setError(questionError instanceof Error ? questionError.message : "Question add failed");
                   }
-                });
+                })();
               }}
             >
               Add Question
@@ -385,7 +442,7 @@ export default function AdminPage() {
                 setMessage(null);
                 setError(null);
 
-                startTransition(async () => {
+                void (async () => {
                   try {
                     await publishContest(session.accessToken, selectedContestId);
                     setMessage(`Published contest ${selectedContestId}`);
@@ -393,7 +450,7 @@ export default function AdminPage() {
                   } catch (publishError) {
                     setError(publishError instanceof Error ? publishError.message : "Publish failed");
                   }
-                });
+                })();
               }}
             >
               Publish Selected Contest
@@ -405,10 +462,13 @@ export default function AdminPage() {
       <div className="grid two" style={{ marginTop: 22 }}>
         <div className="card">
           <div className="eyebrow">Contest Monitor</div>
+          <div className="hero-note muted">
+            Recovery and cache rebuild stay visible here, while the full contest archive opens only when you ask for it.
+          </div>
           <div className="list" style={{ marginTop: 16 }}>
-            {contests.map((contest) => (
+            {visibleContests.map((contest) => (
               <div key={contest.id} className="contest-card">
-                <div className="stack-row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                <div className="stack-row spread">
                   <div>
                     <h3 style={{ margin: "0 0 8px" }}>{contest.title}</h3>
                     <div className="pill-row">
@@ -417,54 +477,55 @@ export default function AdminPage() {
                       <span className="pill rose">{contest.member_count} joined</span>
                     </div>
                   </div>
+                  <div className="stack-row">
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => {
+                        setMessage(null);
+                        setError(null);
 
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() => {
-                      setMessage(null);
-                      setError(null);
+                        void (async () => {
+                          try {
+                            await recoverContest(session.accessToken, contest.id);
+                            setMessage(`Recovery triggered for ${contest.id}`);
+                            await loadAdminData(session.accessToken);
+                          } catch (recoverError) {
+                            setError(recoverError instanceof Error ? recoverError.message : "Recover failed");
+                          }
+                        })();
+                      }}
+                    >
+                      Recover
+                    </button>
 
-                      startTransition(async () => {
-                        try {
-                          await recoverContest(session.accessToken, contest.id);
-                          setMessage(`Recovery triggered for ${contest.id}`);
-                          await loadAdminData(session.accessToken);
-                        } catch (recoverError) {
-                          setError(recoverError instanceof Error ? recoverError.message : "Recover failed");
-                        }
-                      });
-                    }}
-                  >
-                    Recover
-                  </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => {
+                        setMessage(null);
+                        setError(null);
 
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() => {
-                      setMessage(null);
-                      setError(null);
+                        void (async () => {
+                          try {
+                            await rebuildContestCache(session.accessToken, contest.id);
+                            setMessage(`Rebuilt cache for ${contest.id}`);
+                            await loadAdminData(session.accessToken);
+                          } catch (rebuildError) {
+                            setError(rebuildError instanceof Error ? rebuildError.message : "Cache rebuild failed");
+                          }
+                        })();
+                      }}
+                    >
+                      Rebuild Cache
+                    </button>
 
-                      startTransition(async () => {
-                        try {
-                          await rebuildContestCache(session.accessToken, contest.id);
-                          setMessage(`Rebuilt cache for ${contest.id}`);
-                          await loadAdminData(session.accessToken);
-                        } catch (rebuildError) {
-                          setError(rebuildError instanceof Error ? rebuildError.message : "Cache rebuild failed");
-                        }
-                      });
-                    }}
-                  >
-                    Rebuild Cache
-                  </button>
-
-                  {contest.status === "ended" ? (
-                    <Link href={`/contests/${contest.id}/leaderboard`} className="solid-button">
-                      View Result
-                    </Link>
-                  ) : null}
+                    {contest.status === "ended" ? (
+                      <Link href={`/contests/${contest.id}/leaderboard`} className="solid-button">
+                        View Result
+                      </Link>
+                    ) : null}
+                  </div>
                 </div>
 
                 <p className="muted" style={{ marginBottom: 0 }}>
@@ -472,6 +533,15 @@ export default function AdminPage() {
                 </p>
               </div>
             ))}
+            {contests.length > visibleContests.length ? (
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setShowAllContests(true)}
+              >
+                Show More Contests
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -507,7 +577,7 @@ export default function AdminPage() {
                       setMessage(null);
                       setError(null);
 
-                      startTransition(async () => {
+                      void (async () => {
                         try {
                           const result = await retryJob(session.accessToken, job.queue, job.job_id);
                           setMessage(`Job action complete: ${result.mode}`);
@@ -515,7 +585,7 @@ export default function AdminPage() {
                         } catch (retryError) {
                           setError(retryError instanceof Error ? retryError.message : "Job retry failed");
                         }
-                      });
+                      })();
                     }}
                   >
                     Retry / Recreate
@@ -529,7 +599,89 @@ export default function AdminPage() {
 
       <div className="grid two" style={{ marginTop: 22 }}>
         <div className="card">
-          <div className="eyebrow">Admin Wallet Credit</div>
+          <div className="eyebrow">Manage Wallets</div>
+          <h3 style={{ marginTop: 16, marginBottom: 10 }}>Approve add-money requests before balances change</h3>
+          <div className="list" style={{ marginTop: 16 }}>
+            {walletRequests.length === 0 ? (
+              <div className="notice warn">No wallet requests yet.</div>
+            ) : null}
+
+            {walletRequests.slice(0, 6).map((walletRequest) => (
+              <div key={walletRequest.id} className="notice">
+                <div className="stack-row spread">
+                  <div>
+                    <strong>{walletRequest.user_name}</strong>
+                    <div className="muted">{walletRequest.user_email}</div>
+                  </div>
+                  <div className="pill-row">
+                    <span className="pill gold">Rs {walletRequest.amount}</span>
+                    <span className="pill">{walletRequest.status}</span>
+                  </div>
+                </div>
+                <div className="muted" style={{ marginTop: 8 }}>
+                  Requested at {new Date(walletRequest.created_at).toLocaleString()}
+                </div>
+                {walletRequest.status === "pending" ? (
+                  <div className="stack-row" style={{ marginTop: 12 }}>
+                    <button
+                      type="button"
+                      className="solid-button"
+                      onClick={() => {
+                        setMessage(null);
+                        setError(null);
+
+                        void (async () => {
+                          try {
+                            const result = await reviewWalletRequest(
+                              session.accessToken,
+                              walletRequest.id,
+                              "approved"
+                            );
+                            setMessage(
+                              `Approved request for ${result.user_name}. Wallet is now Rs ${result.wallet_balance}.`
+                            );
+                            await loadAdminData(session.accessToken);
+                          } catch (reviewError) {
+                            setError(reviewError instanceof Error ? reviewError.message : "Approval failed");
+                          }
+                        })();
+                      }}
+                    >
+                      Accept Request
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => {
+                        setMessage(null);
+                        setError(null);
+
+                        void (async () => {
+                          try {
+                            const result = await reviewWalletRequest(
+                              session.accessToken,
+                              walletRequest.id,
+                              "rejected"
+                            );
+                            setMessage(`Rejected request for ${result.user_name}.`);
+                            await loadAdminData(session.accessToken);
+                          } catch (reviewError) {
+                            setError(reviewError instanceof Error ? reviewError.message : "Rejection failed");
+                          }
+                        })();
+                      }}
+                    >
+                      Reject
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+
+          <div className="subtle-divider" />
+
+          <h3 style={{ marginTop: 8, marginBottom: 10 }}>Manual credit fallback</h3>
           <label className="field">
             <span>User</span>
             <select
@@ -553,7 +705,7 @@ export default function AdminPage() {
           </label>
           <button
             type="button"
-            className="solid-button"
+            className="ghost-button"
             disabled={!walletForm.userId}
             onClick={() => {
               if (!walletForm.userId) {
@@ -564,7 +716,7 @@ export default function AdminPage() {
               setMessage(null);
               setError(null);
 
-              startTransition(async () => {
+              void (async () => {
                 try {
                   const result = await creditUserWallet(
                     session.accessToken,
@@ -576,19 +728,22 @@ export default function AdminPage() {
                 } catch (creditError) {
                   setError(creditError instanceof Error ? creditError.message : "Wallet credit failed");
                 }
-              });
+              })();
             }}
           >
-            Credit Wallet
+            Credit Wallet Directly
           </button>
         </div>
 
         <div className="card">
           <div className="eyebrow">Users</div>
+          <div className="hero-note muted">
+            Quick visibility into wallet state, admin access, and account flags while you test contest flows.
+          </div>
           <div className="list" style={{ marginTop: 16 }}>
             {users.map((user) => (
               <div key={user.id} className="notice">
-                <div className="stack-row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                <div className="stack-row spread">
                   <div>
                     <strong>{user.name}</strong>
                     <div className="muted">{user.email}</div>
@@ -608,6 +763,54 @@ export default function AdminPage() {
       {selectedContest ? (
         <div className="footer-note">
           Selected contest for question entry: <span className="mono">{selectedContest.id}</span>
+        </div>
+      ) : null}
+
+      {showAllContests ? (
+        <div className="modal-backdrop">
+          <div className="modal-card ledger-modal">
+            <div className="stack-row spread">
+              <div>
+                <div className="eyebrow">All Contests</div>
+                <h3 style={{ marginTop: 14, marginBottom: 8 }}>Full contest archive</h3>
+              </div>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setShowAllContests(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="list" style={{ marginTop: 16 }}>
+              {contests.map((contest) => (
+                <div key={contest.id} className="contest-card">
+                  <div className="stack-row spread">
+                    <div>
+                      <h3 style={{ margin: "0 0 8px" }}>{contest.title}</h3>
+                      <div className="pill-row">
+                        <span className="pill">{contest.status}</span>
+                        <span className="pill gold">Prize Rs {contest.prize_pool}</span>
+                        <span className="pill rose">{contest.member_count} joined</span>
+                      </div>
+                    </div>
+                    {contest.status === "ended" ? (
+                      <Link href={`/contests/${contest.id}/leaderboard`} className="solid-button">
+                        View Result
+                      </Link>
+                    ) : null}
+                  </div>
+                  <p className="muted" style={{ marginBottom: 0 }}>
+                    Starts at {new Date(contest.starts_at).toLocaleString()}
+                  </p>
+                  <div className="mono" style={{ marginTop: 10, fontSize: "0.84rem" }}>
+                    {contest.id}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       ) : null}
     </SiteShell>

@@ -1,0 +1,973 @@
+{
+  "info": {
+    "_postman_id": "d1d8ef61-2977-4c76-8ec9-3d3f52f6f5de",
+    "name": "Quiz App Local API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Local API collection for the Quiz App backend. Uses the current temporary email auth flow until Google OAuth credentials are available."
+  },
+  "item": [
+    {
+      "name": "0. Setup & Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Health check returns 200', function () { pm.response.to.have.status(200); });",
+                  "const data = pm.response.json();",
+                  "pm.test('Health payload marks API healthy', function () { pm.expect(data.ok).to.eql(true); pm.expect(data.service).to.eql('api-server'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "1. Auth Run Order",
+      "item": [
+        {
+          "name": "Player Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.access_token).to.be.a('string').and.not.empty;",
+                  "pm.environment.set('player_access_token', data.access_token);",
+                  "pm.environment.set('user_id', data.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{player_email}}\",\n  \"name\": \"{{player_name}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/dev-login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "dev-login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Player Two Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.access_token).to.be.a('string').and.not.empty;",
+                  "pm.environment.set('player_two_access_token', data.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{player_two_email}}\",\n  \"name\": \"{{player_two_name}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/dev-login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "dev-login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Admin Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.access_token).to.be.a('string').and.not.empty;",
+                  "pm.expect(data.user.is_admin).to.eql(true);",
+                  "pm.environment.set('admin_access_token', data.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{admin_email}}\",\n  \"name\": \"{{admin_name}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/dev-login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "dev-login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Auth Me",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.user.id).to.be.a('string').and.not.empty;"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.access_token).to.be.a('string').and.not.empty;",
+                  "pm.environment.set('player_access_token', data.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/refresh",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Logout",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.success).to.eql(true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/logout",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Player Run Order",
+      "item": [
+        {
+          "name": "Wallet Balance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.wallet_balance).to.match(/^\\d+\\.\\d{2}$/);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/wallet/balance",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "wallet",
+                "balance"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Add Money",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.success).to.eql(true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 50\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/wallet/add-money",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "wallet",
+                "add-money"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Open Contests",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.contests).to.be.an('array');",
+                  "if (data.contests.length > 0) { pm.environment.set('contest_id', data.contests[0].id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/contests",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "contests"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Join Contest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.success).to.eql(true);",
+                  "pm.expect(data.contest_id).to.eql(pm.environment.get('contest_id'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/contests/{{contest_id}}/join",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "contests",
+                "{{contest_id}}",
+                "join"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Leaderboard",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.leaderboard).to.be.an('array');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/contests/{{ended_contest_id}}/leaderboard",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "contests",
+                "{{ended_contest_id}}",
+                "leaderboard"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Admin Run Order",
+      "item": [
+        {
+          "name": "Admin Users",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.users).to.be.an('array');",
+                  "if (data.users.length > 0) { pm.environment.set('user_id', data.users[0].id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/users",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "users"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Admin Contests",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.contests).to.be.an('array');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/contests",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "contests"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create Contest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.contest.id).to.be.a('string').and.not.empty;",
+                  "pm.environment.set('contest_id', data.contest.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Postman Test Contest\",\n  \"starts_at\": \"2026-03-28T12:00:00.000Z\",\n  \"entry_fee\": 10,\n  \"max_members\": 100,\n  \"prize_rule\": \"all_correct\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/contests",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "contests"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Add Question 1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seq\": 1,\n  \"body\": \"Capital of India?\",\n  \"option_a\": \"Mumbai\",\n  \"option_b\": \"New Delhi\",\n  \"option_c\": \"Chennai\",\n  \"option_d\": \"Kolkata\",\n  \"correct_option\": \"b\",\n  \"time_limit_sec\": 15\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/contests/{{contest_id}}/questions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "contests",
+                "{{contest_id}}",
+                "questions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Add Question 2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seq\": 2,\n  \"body\": \"2 + 2 = ?\",\n  \"option_a\": \"3\",\n  \"option_b\": \"4\",\n  \"option_c\": \"5\",\n  \"option_d\": \"6\",\n  \"correct_option\": \"b\",\n  \"time_limit_sec\": 15\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/contests/{{contest_id}}/questions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "contests",
+                "{{contest_id}}",
+                "questions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Publish Contest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.success).to.eql(true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/contests/{{contest_id}}/publish",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "contests",
+                "{{contest_id}}",
+                "publish"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Credit User Wallet",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.success).to.eql(true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 50\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/users/{{user_id}}/wallet/credit",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{user_id}}",
+                "wallet",
+                "credit"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Recovery & Jobs",
+      "item": [
+        {
+          "name": "Jobs Monitor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.jobs).to.be.an('array');",
+                  "if (data.jobs.length > 0) { pm.environment.set('job_queue', data.jobs[0].queue); pm.environment.set('job_id', data.jobs[0].job_id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/jobs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "jobs"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Retry Job",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/jobs/{{job_queue}}/{{job_id}}/retry",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "jobs",
+                "{{job_queue}}",
+                "{{job_id}}",
+                "retry"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Rebuild Contest Cache",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/contests/{{contest_id}}/rebuild-cache",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "contests",
+                "{{contest_id}}",
+                "rebuild-cache"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Recover Contest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.response.to.have.status(200);",
+                  "const data = pm.response.json();",
+                  "pm.expect(data.success).to.eql(true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/contests/{{contest_id}}/recover",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "contests",
+                "{{contest_id}}",
+                "recover"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:4000"
+    }
+  ]
+}

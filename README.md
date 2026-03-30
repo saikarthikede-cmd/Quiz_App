@@ -90,6 +90,22 @@ Terminal 4:
 pnpm dev:frontend
 ```
 
+## One-command local startup
+
+If you do not want to open four terminals manually, use:
+
+```powershell
+cd C:\Users\FL_LPT-573\Desktop\QUIZ-APP
+pnpm dev:all
+```
+
+This opens the API, game server, worker, and frontend in separate PowerShell windows and writes logs to:
+
+- `.\logs\api-run.log`
+- `.\logs\game-run.log`
+- `.\logs\worker-run.log`
+- `.\logs\frontend-run.log`
+
 ## Quick health checks
 
 ```powershell

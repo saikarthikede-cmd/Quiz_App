@@ -1,0 +1,13 @@
+node_modules
+.git
+.next
+.next-dev
+dist
+logs
+.postman
+.vscode
+*.session.sql
+pnpm-debug.log
+services/frontend/.next
+services/frontend/.next-dev
+services/frontend/out

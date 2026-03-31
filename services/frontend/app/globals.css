@@ -981,11 +981,16 @@ button {
   place-items: center;
   padding: 20px;
   z-index: 40;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .modal-card {
   position: relative;
   width: min(640px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-radius: 28px;
   padding: 26px;
   border: 1px solid rgba(132, 153, 194, 0.22);

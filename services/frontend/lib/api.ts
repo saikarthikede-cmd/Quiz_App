@@ -1,3 +1,4 @@
+import { clearStoredSession, getStoredSession, setStoredSession } from "./session";
 import { API_URL } from "./config";
 
 export interface LoginResponse {
@@ -25,8 +26,10 @@ export interface GoogleConfigResponse {
   client_id: string | null;
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit, accessToken?: string): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
+let refreshPromise: Promise<string | null> | null = null;
+
+async function runFetch(path: string, init?: RequestInit, accessToken?: string) {
+  return fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
       "content-type": "application/json",
@@ -36,6 +39,66 @@ async function apiFetch<T>(path: string, init?: RequestInit, accessToken?: strin
     credentials: "include",
     cache: "no-store"
   });
+}
+
+async function refreshAccessToken() {
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+
+  refreshPromise = (async () => {
+    try {
+      const response = await runFetch("/auth/refresh", {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+
+      if (!response.ok) {
+        clearStoredSession();
+        return null;
+      }
+
+      const body = (await response.json()) as { access_token: string };
+      const existingSession = getStoredSession();
+
+      if (existingSession) {
+        setStoredSession({
+          ...existingSession,
+          accessToken: body.access_token
+        });
+      }
+
+      return body.access_token;
+    } catch {
+      clearStoredSession();
+      return null;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit, accessToken?: string): Promise<T> {
+  let response = await runFetch(path, init, accessToken);
+
+  const canRetryWithRefresh =
+    response.status === 401 &&
+    Boolean(accessToken) &&
+    !path.startsWith("/auth/refresh") &&
+    !path.startsWith("/auth/google") &&
+    !path.startsWith("/auth/request-otp") &&
+    !path.startsWith("/auth/verify-otp") &&
+    !path.startsWith("/auth/dev-login");
+
+  if (canRetryWithRefresh) {
+    const nextAccessToken = await refreshAccessToken();
+
+    if (nextAccessToken) {
+      response = await runFetch(path, init, nextAccessToken);
+    }
+  }
 
   if (!response.ok) {
     let message = `Request failed with ${response.status}`;
@@ -47,6 +110,16 @@ async function apiFetch<T>(path: string, init?: RequestInit, accessToken?: strin
       }
     } catch {
       // Ignore parse errors.
+    }
+
+    if (
+      response.status === 401 ||
+      message === "User not found" ||
+      message === "Invalid or expired access token" ||
+      message === "Missing refresh token cookie" ||
+      message === "Refresh token is invalid or expired"
+    ) {
+      clearStoredSession();
     }
 
     throw new Error(message);

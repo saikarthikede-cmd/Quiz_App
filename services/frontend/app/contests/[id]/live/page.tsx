@@ -55,7 +55,11 @@ export default function LiveContestPage() {
     }
 
     const socket = io(GAME_URL, {
-      transports: ["websocket"],
+      transports: ["polling", "websocket"],
+      upgrade: true,
+      reconnection: true,
+      reconnectionAttempts: 5,
+      timeout: 10000,
       auth: {
         token: session.accessToken,
         contest_id: contestId

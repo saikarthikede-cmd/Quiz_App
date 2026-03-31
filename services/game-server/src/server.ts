@@ -20,7 +20,21 @@ const gamePort = Number(process.env.GAME_PORT ?? 4001);
 const jwtSecret = new TextEncoder().encode(process.env.JWT_SECRET ?? "replace_me");
 const jwtIssuer = process.env.JWT_ISSUER ?? "quiz-app";
 const jwtAudience = process.env.JWT_AUDIENCE ?? "quiz-app-users";
-const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3000";
+
+function parseCsv(...values: Array<string | undefined>) {
+  return values
+    .flatMap((value) => (value ?? "").split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+const frontendUrls = new Set(
+  parseCsv(
+    process.env.FRONTEND_URL,
+    process.env.FRONTEND_URLS,
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
+  )
+);
 
 function isAllowedDevOrigin(origin: string) {
   try {
@@ -42,7 +56,12 @@ const httpServer = createServer();
 const io = new Server(httpServer, {
   cors: {
     origin(origin, callback) {
-      if (!origin || origin === frontendUrl) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      if (frontendUrls.has(origin)) {
         callback(null, true);
         return;
       }
@@ -395,8 +414,13 @@ io.on("connection", async (socket) => {
             commandRedis.hincrby(contestScoresKey(message.contest_id), user.id, 1)
           );
         }
-      } catch {
-        return socket.emit("error", { type: "error", code: "SERVER_ERROR" });
+      } catch (redisWriteError) {
+        console.error("Redis write failed after answer persisted", {
+          contestId: message.contest_id,
+          questionSeq: message.question_seq,
+          userId: user.id,
+          error: redisWriteError instanceof Error ? redisWriteError.message : String(redisWriteError)
+        });
       }
 
       const yourScore = await getUserScore(message.contest_id, user.id);

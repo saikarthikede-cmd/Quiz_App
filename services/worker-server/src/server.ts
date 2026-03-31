@@ -166,7 +166,7 @@ async function startContest(contestId: string) {
   }>("SELECT status FROM contests WHERE id = $1 LIMIT 1", [contestId]);
 
   if (contestResult.rowCount !== 1) {
-    throw new Error("Contest not found");
+    return { skipped: true, reason: "contest-missing" };
   }
 
   if (contestResult.rows[0].status === "live") {
@@ -276,7 +276,7 @@ async function broadcastQuestion(contestId: string, seq: number) {
   );
 
   if (contestResult.rowCount !== 1) {
-    throw new Error("Contest not found");
+    return { skipped: true, reason: "contest-missing" };
   }
 
   if (contestResult.rows[0].current_q >= seq) {
@@ -338,7 +338,7 @@ async function endContest(contestId: string) {
   );
 
   if (contestResult.rowCount !== 1) {
-    throw new Error("Contest not found");
+    return { skipped: true, reason: "contest-missing" };
   }
 
   if (contestResult.rows[0].status === "ended") {
@@ -512,7 +512,7 @@ async function refundContest(contestId: string) {
   );
 
   if (contestResult.rowCount !== 1) {
-    throw new Error("Contest not found");
+    return { skipped: true, reason: "contest-missing" };
   }
 
   if (contestResult.rows[0].status === "cancelled") {

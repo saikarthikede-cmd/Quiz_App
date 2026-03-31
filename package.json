@@ -5,6 +5,9 @@
   "scripts": {
     "build": "pnpm -r build",
     "dev:all": "powershell -ExecutionPolicy Bypass -File ./scripts/dev-all.ps1",
+    "docker:app:e2e": "powershell -ExecutionPolicy Bypass -File ./scripts/docker-e2e.ps1",
+    "docker:app:up": "powershell -ExecutionPolicy Bypass -File ./scripts/docker-start.ps1",
+    "docker:app:smoke": "powershell -ExecutionPolicy Bypass -File ./scripts/docker-smoke.ps1",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "db:migrate": "pnpm --filter @quiz-app/db migrate",

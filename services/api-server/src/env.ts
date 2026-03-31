@@ -7,6 +7,20 @@ const parseCsv = (...values: Array<string | undefined>) =>
     .map((value) => value.trim())
     .filter(Boolean);
 
+const normalizeCookieDomain = (value: string | undefined) => {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized === "localhost" || normalized === "127.0.0.1") {
+    return undefined;
+  }
+
+  return normalized;
+};
+
 export const config = {
   apiPort: toNumber(process.env.API_PORT, 4000),
   frontendUrl: process.env.FRONTEND_URL ?? "http://localhost:3000",
@@ -35,7 +49,7 @@ export const config = {
   otpAllowedDomains: parseCsv(process.env.AUTH_ALLOWED_EMAIL_DOMAINS).map((value) =>
     value.toLowerCase()
   ),
-  cookieDomain: process.env.COOKIE_DOMAIN ?? "localhost",
+  cookieDomain: normalizeCookieDomain(process.env.COOKIE_DOMAIN),
   cookieSecure: process.env.COOKIE_SECURE === "true",
   adminEmail: (process.env.ADMIN_EMAIL ?? "admin.quiz@gmail.com").toLowerCase(),
   googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() ?? ""

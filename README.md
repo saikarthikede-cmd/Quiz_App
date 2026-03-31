@@ -106,6 +106,36 @@ This opens the API, game server, worker, and frontend in separate PowerShell win
 - `.\logs\worker-run.log`
 - `.\logs\frontend-run.log`
 
+## One-command Docker startup
+
+If you want to run everything through Docker only:
+
+```powershell
+cd C:\Users\FL_LPT-573\Desktop\QUIZ-APP
+pnpm docker:app:up
+```
+
+This builds and starts the full Docker stack, then waits until frontend, API, and game server are reachable.
+
+## One-command Docker E2E validation
+
+Run this before demos when you want a full create -> publish -> join -> live score -> leaderboard check:
+
+```powershell
+cd C:\Users\FL_LPT-573\Desktop\QUIZ-APP
+pnpm docker:app:e2e
+```
+
+This script will:
+
+- verify Docker services are reachable
+- create a fresh contest
+- add 2 questions
+- publish it
+- join `player.one@gmail.com`
+- run the socket test client with scripted correct answers
+- verify the final leaderboard
+
 ## Quick health checks
 
 ```powershell

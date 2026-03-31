@@ -1,27 +1,6 @@
 import { pool } from "@quiz-app/db";
 
-const demoUsers = [
-  { email: "admin.quiz@gmail.com", name: "Quiz Admin", is_admin: true, balance: "500.00" },
-  { email: "player.one@gmail.com", name: "Player One", is_admin: false, balance: "100.00" },
-  { email: "player.two@gmail.com", name: "Player Two", is_admin: false, balance: "100.00" }
-];
-
 async function seed() {
-  for (const user of demoUsers) {
-    await pool.query(
-      `
-        INSERT INTO users (email, name, is_admin, wallet_balance)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (email) DO UPDATE
-        SET name = EXCLUDED.name,
-            is_admin = EXCLUDED.is_admin,
-            wallet_balance = EXCLUDED.wallet_balance,
-            updated_at = NOW()
-      `,
-      [user.email, user.name, user.is_admin, user.balance]
-    );
-  }
-
   const existingContest = await pool.query<{ id: string }>(
     "SELECT id FROM contests WHERE title = 'General Knowledge Sprint' LIMIT 1"
   );

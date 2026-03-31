@@ -186,7 +186,7 @@ export default function AdminPage() {
       <SiteShell title="Admin Console" subtitle="This route is reserved for admin users.">
         <div className="notice error">
           The current session does not have admin access. Sign in using
-          <span className="mono"> admin.quiz@gmail.com</span>.
+          <span className="mono"> saikarthik.ede@fissionlabs.com</span>.
         </div>
       </SiteShell>
     );

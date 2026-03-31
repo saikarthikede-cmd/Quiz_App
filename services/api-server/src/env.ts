@@ -51,6 +51,6 @@ export const config = {
   ),
   cookieDomain: normalizeCookieDomain(process.env.COOKIE_DOMAIN),
   cookieSecure: process.env.COOKIE_SECURE === "true",
-  adminEmail: (process.env.ADMIN_EMAIL ?? "admin.quiz@gmail.com").toLowerCase(),
+  adminEmail: (process.env.ADMIN_EMAIL ?? "saikarthik.ede@fissionlabs.com").toLowerCase(),
   googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() ?? ""
 };

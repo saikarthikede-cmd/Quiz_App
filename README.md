@@ -149,9 +149,8 @@ Test-NetConnection localhost -Port 3000
 
 ## Demo users
 
-- `admin.quiz@gmail.com`
-- `player.one@gmail.com`
-- `player.two@gmail.com`
+- `saikarthik.ede@fissionlabs.com` for admin access
+- any other Google-authenticated or dev-login email for player access
 
 ## API smoke test
 
@@ -163,7 +162,7 @@ $login = Invoke-RestMethod `
   -Method Post `
   -WebSession $session `
   -ContentType 'application/json' `
-  -Body '{"email":"player.one@gmail.com","name":"Player One"}'
+  -Body '{"email":"demo.player@example.com","name":"Demo Player"}'
 
 $headers = @{ Authorization = "Bearer $($login.access_token)" }
 
@@ -189,7 +188,7 @@ $admin = Invoke-RestMethod `
   -Uri 'http://localhost:4000/auth/dev-login' `
   -Method Post `
   -ContentType 'application/json' `
-  -Body '{"email":"admin.quiz@gmail.com","name":"Quiz Admin"}'
+  -Body '{"email":"saikarthik.ede@fissionlabs.com","name":"Admin User"}'
 
 $adminHeaders = @{ Authorization = "Bearer $($admin.access_token)" }
 $startsAt = (Get-Date).ToUniversalTime().AddMinutes(2).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
@@ -240,8 +239,8 @@ Use a fresh contest that starts in the next 2 minutes.
 Terminal A:
 
 ```powershell
-$env:TEST_EMAIL='player.one@gmail.com'
-$env:TEST_NAME='Player One'
+$env:TEST_EMAIL='demo.player.one@example.com'
+$env:TEST_NAME='Demo Player One'
 $env:TEST_CONTEST_ID='<contest-id>'
 $env:TEST_ANSWERS='b,b'
 pnpm test:socket-client
@@ -250,8 +249,8 @@ pnpm test:socket-client
 Terminal B:
 
 ```powershell
-$env:TEST_EMAIL='player.two@gmail.com'
-$env:TEST_NAME='Player Two'
+$env:TEST_EMAIL='demo.player.two@example.com'
+$env:TEST_NAME='Demo Player Two'
 $env:TEST_CONTEST_ID='<contest-id>'
 $env:TEST_ANSWERS='b,a'
 pnpm test:socket-client

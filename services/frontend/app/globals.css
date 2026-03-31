@@ -889,14 +889,15 @@ button {
   gap: 12px;
   padding: 28px;
   border-radius: 24px;
-  border: 1px solid rgba(118, 201, 255, 0.16);
+  border: 1px solid var(--line);
   background:
-    radial-gradient(circle at top right, rgba(110, 99, 255, 0.16), transparent 34%),
-    radial-gradient(circle at bottom left, rgba(20, 166, 191, 0.18), transparent 36%),
-    linear-gradient(155deg, rgba(255, 255, 255, 0.32), rgba(241, 250, 255, 0.16));
+    radial-gradient(circle at top right, rgba(20, 166, 191, 0.16), transparent 30%),
+    radial-gradient(circle at bottom left, rgba(255, 116, 104, 0.14), transparent 34%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.28), rgba(241, 250, 255, 0.14));
   box-shadow: var(--shadow-soft);
   justify-items: center;
   text-align: center;
+  backdrop-filter: blur(12px) saturate(140%);
 }
 
 .waiting-timer-label {
@@ -925,8 +926,11 @@ button {
   place-items: center;
   z-index: 35;
   padding: 108px 20px 20px;
-  background: rgba(44, 58, 98, 0.52);
-  backdrop-filter: blur(24px) saturate(118%);
+  background:
+    radial-gradient(circle at top right, rgba(20, 166, 191, 0.18), transparent 28%),
+    radial-gradient(circle at bottom left, rgba(255, 116, 104, 0.14), transparent 30%),
+    rgba(244, 249, 255, 0.48);
+  backdrop-filter: blur(22px) saturate(125%);
   pointer-events: auto;
 }
 
@@ -936,12 +940,12 @@ button {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   border-radius: 30px;
-  border: 1px solid rgba(132, 153, 194, 0.24);
+  border: 1px solid var(--line);
   background:
-    radial-gradient(circle at top right, rgba(20, 166, 191, 0.18), transparent 28%),
-    radial-gradient(circle at bottom left, rgba(255, 116, 104, 0.12), transparent 30%),
-    linear-gradient(160deg, rgba(255, 255, 255, 0.4), rgba(243, 250, 255, 0.2));
-  box-shadow: 0 28px 80px rgba(79, 107, 171, 0.22);
+    radial-gradient(circle at top right, rgba(20, 166, 191, 0.16), transparent 30%),
+    radial-gradient(circle at bottom left, rgba(255, 116, 104, 0.14), transparent 34%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.3), rgba(241, 250, 255, 0.16));
+  box-shadow: var(--shadow);
   backdrop-filter: blur(18px) saturate(145%);
   overflow: hidden;
   pointer-events: auto;
@@ -960,9 +964,9 @@ button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   padding: 18px 20px;
-  border-bottom: 1px solid rgba(132, 153, 194, 0.16);
+  border-bottom: 1px solid rgba(118, 201, 255, 0.12);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(248, 252, 255, 0.14));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(244, 250, 255, 0.16));
 }
 
 .exam-metric {
@@ -970,10 +974,12 @@ button {
   gap: 6px;
   padding: 14px 16px;
   border-radius: 18px;
-  background:
-    radial-gradient(circle at top right, rgba(110, 99, 255, 0.14), transparent 32%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.34), rgba(241, 248, 255, 0.18));
   border: 1px solid rgba(118, 201, 255, 0.12);
+  background:
+    radial-gradient(circle at top right, rgba(20, 166, 191, 0.14), transparent 34%),
+    radial-gradient(circle at bottom left, rgba(255, 190, 92, 0.12), transparent 36%),
+    linear-gradient(150deg, rgba(255, 255, 255, 0.26), rgba(239, 248, 255, 0.14));
+  box-shadow: var(--shadow-soft);
 }
 
 .exam-metric-label {

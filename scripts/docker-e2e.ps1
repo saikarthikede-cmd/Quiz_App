@@ -6,6 +6,9 @@ Set-Location $repoRoot
 $apiBaseUrl = "http://127.0.0.1:4000"
 $frontendUrl = "http://127.0.0.1:3000"
 $gamePollingUrl = "http://127.0.0.1:4001/socket.io/?EIO=4&transport=polling"
+$adminEmail = if ($env:ADMIN_EMAIL) { $env:ADMIN_EMAIL } else { "saikarthik.ede@fissionlabs.com" }
+$playerEmail = "docker.e2e.$([Guid]::NewGuid().ToString('N').Substring(0, 10))@example.com"
+$playerName = "Docker E2E Player"
 
 function Write-Step($message) {
   Write-Host ""
@@ -41,7 +44,7 @@ Wait-ForReady $gamePollingUrl "Game server"
 
 Write-Step "Creating admin session"
 $adminLogin = Invoke-JsonPost "$apiBaseUrl/auth/dev-login" @{
-  email = "saikarthik.ede@fissionlabs.com"
+  email = $adminEmail
   name = "Admin User"
 }
 $adminHeaders = @{ Authorization = "Bearer $($adminLogin.access_token)" }
@@ -86,8 +89,8 @@ Invoke-JsonPost "$apiBaseUrl/admin/contests/$contestId/publish" @{} $adminHeader
 
 Write-Step "Joining player to contest"
 $playerLogin = Invoke-JsonPost "$apiBaseUrl/auth/dev-login" @{
-  email = "player.one@gmail.com"
-  name = "Player One"
+  email = $playerEmail
+  name = $playerName
 }
 $playerHeaders = @{ Authorization = "Bearer $($playerLogin.access_token)" }
 $joinResult = Invoke-JsonPost "$apiBaseUrl/contests/$contestId/join" @{} $playerHeaders
@@ -106,8 +109,8 @@ $previousEnv = @{
 try {
   $env:API_BASE_URL = $apiBaseUrl
   $env:GAME_BASE_URL = "http://127.0.0.1:4001"
-  $env:TEST_EMAIL = "player.one@gmail.com"
-  $env:TEST_NAME = "Player One"
+  $env:TEST_EMAIL = $playerEmail
+  $env:TEST_NAME = $playerName
   $env:TEST_CONTEST_ID = $contestId
   $env:TEST_ANSWERS = "b,b"
 

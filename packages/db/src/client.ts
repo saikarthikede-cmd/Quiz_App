@@ -14,7 +14,16 @@ export const pool = new Pool({
 export async function withTransaction<T>(
   fn: (client: pg.PoolClient) => Promise<T>
 ): Promise<T> {
-  const client = await pool.connect();
+  let client: pg.PoolClient | undefined;
+
+  try {
+    client = await pool.connect();
+  } catch (connectError) {
+    const error = new Error("Database connection unavailable");
+    error.name = "DB_UNAVAILABLE";
+    (error as NodeJS.ErrnoException).cause = connectError;
+    throw error;
+  }
 
   try {
     await client.query("BEGIN");
@@ -22,7 +31,11 @@ export async function withTransaction<T>(
     await client.query("COMMIT");
     return result;
   } catch (error) {
-    await client.query("ROLLBACK");
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // ROLLBACK failed — connection is broken; release and re-throw the original error
+    }
     throw error;
   } finally {
     client.release();

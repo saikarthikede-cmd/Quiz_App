@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { getGoogleConfig, loginWithGoogle } from "../lib/api";
 import { setStoredSession } from "../lib/session";
+import { resolveRouteTenantSlug } from "../lib/tenant";
 
 declare global {
   interface Window {
@@ -55,10 +56,12 @@ function loadGoogleScript() {
 
 export function LoginCard({
   onSuccess,
-  targetHref = "/dashboard"
+  targetHref = "/",
+  tenantSlug
 }: {
   onSuccess?: () => void;
   targetHref?: string;
+  tenantSlug?: string | null;
 }) {
   const router = useRouter();
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
@@ -67,18 +70,26 @@ export function LoginCard({
   const [googleReady, setGoogleReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [googlePending, setGooglePending] = useState(false);
+  const resolvedTenantSlug = resolveRouteTenantSlug(tenantSlug);
 
   function completeLogin(result: Awaited<ReturnType<typeof loginWithGoogle>>) {
+    const sessionTenantSlug = result.tenant?.slug ?? resolvedTenantSlug ?? "default";
+    const nextHref = result.user.is_platform_admin ? "/admin" : targetHref;
+
     setStoredSession({
       accessToken: result.access_token,
       email: result.user.email,
       name: result.user.name,
       userId: result.user.id,
-      isAdmin: result.user.is_admin
+      isAdmin: result.user.is_admin,
+      isPlatformAdmin: result.user.is_platform_admin ?? false,
+      tenantSlug: sessionTenantSlug,
+      onboardingCompleted: result.user.onboarding_completed ?? Boolean(result.user.is_platform_admin),
+      userType: result.user.user_type ?? null,
+      membershipType: result.user.membership_type ?? null
     });
 
     onSuccess?.();
-    const nextHref = result.user.is_admin && targetHref === "/dashboard" ? "/admin" : targetHref;
 
     router.replace(nextHref);
     window.setTimeout(() => {
@@ -198,7 +209,7 @@ export function LoginCard({
         </div>
       ) : (
         <div className="notice warn" style={{ marginBottom: 16 }}>
-          Google sign-in is temporarily unavailable right now. Please check the configuration and try again.
+          Google sign-in is currently unavailable. Please verify the OAuth configuration and try again.
         </div>
       )}
 

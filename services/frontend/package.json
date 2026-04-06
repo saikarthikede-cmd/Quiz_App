@@ -4,9 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prebuild": "node ../../scripts/normalize-frontend-tsconfig.mjs",
     "dev": "next dev",
     "build": "next build",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "postbuild": "node ../../scripts/normalize-frontend-tsconfig.mjs",
+    "prelint": "node ../../scripts/normalize-frontend-tsconfig.mjs",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "postlint": "node ../../scripts/normalize-frontend-tsconfig.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

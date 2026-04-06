@@ -2,21 +2,32 @@ import { Queue } from "bullmq";
 
 export interface ContestLifecycleJobPayload {
   contestId: string;
+  tenantId: string;
   seq?: number;
 }
 
 export interface PrizeCreditJobPayload {
   contestId: string;
+  tenantId: string;
   userId: string;
 }
 
 export interface RefundJobPayload {
   contestId: string;
+  tenantId: string;
+  userId?: string;
+}
+
+export interface AnswerJobPayload {
+  contestId: string;
+  tenantId?: string;
+  questionId?: string;
   userId?: string;
 }
 
 export const CONTEST_LIFECYCLE_QUEUE = "contest-lifecycle";
 export const PAYOUTS_QUEUE = "payouts";
+export const ANSWERS_QUEUE = "answers";
 
 export const contestLifecycleJobNames = {
   startContest: "start-contest",
@@ -29,6 +40,10 @@ export const contestLifecycleJobNames = {
 export const payoutJobNames = {
   prizeCredit: "prize-credit",
   refund: "refund"
+} as const;
+
+export const answerJobNames = {
+  persistAnswer: "persist-answer"
 } as const;
 
 const connection = {
@@ -61,6 +76,19 @@ export const payoutsQueue = new Queue<PrizeCreditJobPayload | RefundJobPayload>(
   }
 });
 
+export const answersQueue = new Queue<AnswerJobPayload>(ANSWERS_QUEUE, {
+  connection,
+  defaultJobOptions: {
+    attempts: 5,
+    backoff: {
+      type: "exponential",
+      delay: 1000
+    },
+    removeOnComplete: 1000,
+    removeOnFail: 1000
+  }
+});
+
 export function getQueueByName(name: string) {
   if (name === CONTEST_LIFECYCLE_QUEUE) {
     return contestLifecycleQueue;
@@ -68,6 +96,10 @@ export function getQueueByName(name: string) {
 
   if (name === PAYOUTS_QUEUE) {
     return payoutsQueue;
+  }
+
+  if (name === ANSWERS_QUEUE) {
+    return answersQueue;
   }
 
   throw new Error(`Unsupported queue name: ${name}`);

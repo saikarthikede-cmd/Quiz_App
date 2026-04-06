@@ -1,8 +1,9 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { startTransition, useEffect, useState } from "react";
 
+import { useFrontendSession } from "../../../../components/session-panel";
 import { SiteShell } from "../../../../components/site-shell";
 import { getLeaderboard } from "../../../../lib/api";
 
@@ -16,8 +17,11 @@ interface LeaderboardRow {
 }
 
 export default function LeaderboardPage() {
-  const params = useParams<{ id: string }>();
+  const params = useParams<{ slug?: string; id: string }>();
+  const router = useRouter();
+  const tenantSlug = typeof params.slug === "string" ? params.slug : null;
   const contestId = params.id;
+  const { isReady } = useFrontendSession();
   const [rows, setRows] = useState<LeaderboardRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const winnerCount = rows.filter((row) => row.is_winner).length;
@@ -26,6 +30,20 @@ export default function LeaderboardPage() {
     .toFixed(2);
 
   useEffect(() => {
+    if (!isReady) {
+      return;
+    }
+
+    if (!tenantSlug) {
+      router.replace("/");
+    }
+  }, [isReady, router, tenantSlug]);
+
+  useEffect(() => {
+    if (!tenantSlug) {
+      return;
+    }
+
     startTransition(async () => {
       try {
         const result = await getLeaderboard(contestId);
@@ -34,7 +52,15 @@ export default function LeaderboardPage() {
         setError(loadError instanceof Error ? loadError.message : "Failed to load leaderboard");
       }
     });
-  }, [contestId]);
+  }, [contestId, tenantSlug]);
+
+  if (!tenantSlug) {
+    return (
+      <SiteShell title="Contest Leaderboard" subtitle="Resolving organization workspace...">
+        <div className="notice">Redirecting to organization selection...</div>
+      </SiteShell>
+    );
+  }
 
   return (
     <SiteShell

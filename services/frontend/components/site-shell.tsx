@@ -6,7 +6,9 @@ import { useEffect, useState } from "react";
 import clsx from "clsx";
 
 import { LoginCard } from "./login-card";
+import { logout } from "../lib/api";
 import { addSessionListener, clearStoredSession, getStoredSession, type FrontendSession } from "../lib/session";
+import { buildTenantPath, extractTenantSlugFromPath } from "../lib/tenant";
 
 export function SiteShell({
   children,
@@ -21,6 +23,14 @@ export function SiteShell({
   const router = useRouter();
   const [session, setSession] = useState<FrontendSession | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const routeTenantSlug = extractTenantSlugFromPath(pathname);
+  const activeTenantSlug = routeTenantSlug ?? session?.tenantSlug ?? null;
+  const isPlatformSurface = !routeTenantSlug && Boolean(session?.isPlatformAdmin);
+  const tenantHomeHref = isPlatformSurface ? "/admin" : buildTenantPath(activeTenantSlug);
+  const tenantDashboardHref = isPlatformSurface ? "/admin" : buildTenantPath(activeTenantSlug, "/dashboard");
+  const tenantAdminHref = isPlatformSurface ? "/admin" : buildTenantPath(activeTenantSlug, "/admin");
+  const tenantLoginHref = isPlatformSurface ? "/" : buildTenantPath(activeTenantSlug, "/login");
 
   useEffect(() => {
     const syncSession = () => {
@@ -31,11 +41,29 @@ export function SiteShell({
     return addSessionListener(syncSession);
   }, []);
 
+  useEffect(() => {
+    if (!routeTenantSlug || !session || session.tenantSlug === routeTenantSlug || session.isPlatformAdmin) {
+      return;
+    }
+
+    clearStoredSession();
+    setSession(null);
+    router.replace(buildTenantPath(routeTenantSlug, "/login"));
+  }, [routeTenantSlug, router, session]);
+
+  useEffect(() => {
+    if (!routeTenantSlug || !session || session.isPlatformAdmin || session.onboardingCompleted) {
+      return;
+    }
+
+    router.replace("/");
+  }, [routeTenantSlug, router, session]);
+
   return (
     <div className="page-shell">
       <header className="topbar">
         <div className="container topbar-inner">
-          <Link href="/" className="brand">
+          <Link href={tenantHomeHref} className="brand">
             <span className="brand-mark">
               <span className="brand-mark-core">Q</span>
               <span className="brand-mark-spark" />
@@ -47,78 +75,110 @@ export function SiteShell({
           </Link>
 
           <nav className="nav-links">
-            <Link href="/" className={clsx("nav-link", pathname === "/" && "solid-button")}>
+            {session?.isPlatformAdmin && routeTenantSlug ? (
+              <Link href="/admin" className={clsx("nav-link", pathname === "/admin" && "nav-link-active")}>
+                Main Console
+              </Link>
+            ) : null}
+            <Link href={tenantHomeHref} className={clsx("nav-link", pathname === tenantHomeHref && "nav-link-active")}>
               Home
             </Link>
             <Link
-              href="/dashboard"
-              className={clsx("nav-link", pathname === "/dashboard" && "solid-button")}
+              href={tenantDashboardHref}
+              className={clsx("nav-link", pathname === tenantDashboardHref && "nav-link-active")}
             >
               Dashboard
             </Link>
-            <Link
-              href="/admin"
-              className={clsx("nav-link", pathname === "/admin" && "solid-button")}
-            >
-              Admin
-            </Link>
+            {session?.isAdmin ? (
+              <Link
+                href={tenantAdminHref}
+                className={clsx("nav-link", pathname === tenantAdminHref && "nav-link-active")}
+              >
+                Admin
+              </Link>
+            ) : null}
             {session ? (
               <>
-                <span className="pill gold">{session.email}</span>
+                <span className="pill gold">{session.name}</span>
                 <button
                   type="button"
                   className="logout-button"
-                  onClick={() => {
-                    clearStoredSession();
-                    setSession(null);
-                    router.push("/");
+                  disabled={isLoggingOut}
+                  onClick={async () => {
+                    setIsLoggingOut(true);
+
+                    try {
+                      await logout();
+                    } finally {
+                      clearStoredSession();
+                      setSession(null);
+                      setIsLoggingOut(false);
+                      router.push(tenantLoginHref);
+                    }
                   }}
                 >
-                  Logout
+                  {isLoggingOut ? "Signing out..." : "Logout"}
                 </button>
               </>
             ) : (
-              <button
-                type="button"
-                className="solid-button"
-                onClick={() => setLoginOpen(true)}
-              >
-                Sign In
-              </button>
+              routeTenantSlug ? (
+                <button
+                  type="button"
+                  className="solid-button"
+                  onClick={() => setLoginOpen(true)}
+                >
+                  Sign In
+                </button>
+              ) : (
+                <Link href="/" className="solid-button">
+                  Sign In
+                </Link>
+              )
             )}
           </nav>
         </div>
       </header>
 
       <main className="container section">
-        <div className="page-banner" style={{ marginBottom: 24 }}>
-          <div className="status-marquee">
-            <span className="status-dot" />
-            <span className="muted-label">Live Build Signal</span>
-            <span className="muted">Frontend integrated with API, worker, game server, Redis, and Postgres.</span>
+        <div className="page-banner page-banner-grid" style={{ marginBottom: 24 }}>
+          <div className="hero-copy card compact page-hero-card">
+            <div className="eyebrow">{routeTenantSlug ? `${routeTenantSlug} workspace` : "Quiz Master"}</div>
+            <h1 className="section-title">{title}</h1>
+            {subtitle ? <p className="muted hero-kicker">{subtitle}</p> : null}
+            <div className="hero-footnote">
+              <span className="pill gold">{session ? "Signed in" : "Guest view"}</span>
+              <span className="pill">
+                {session?.isPlatformAdmin
+                  ? "Main admin access"
+                  : session?.isAdmin
+                    ? "Admin access"
+                    : routeTenantSlug
+                      ? "Contest-ready flow"
+                      : "Sign in to continue"}
+              </span>
+            </div>
           </div>
 
-          <div className="page-banner-grid">
-            <div className="hero-copy card compact">
-              <div className="eyebrow">Frontend Integration</div>
-              <h1 className="section-title">{title}</h1>
-              <p className="muted">{subtitle}</p>
+          <div className="card hero-rail">
+            <div className="hero-rail-top">
+              <div className="eyebrow">Workspace Focus</div>
+              {routeTenantSlug ? <span className="pill">{routeTenantSlug}</span> : null}
             </div>
-
-            <div className="card">
-              <div className="eyebrow">Current Session</div>
-              <div className="mini-stat-grid" style={{ marginTop: 16 }}>
-                <div className="mini-stat">
-                  <span className="muted-label">Mode</span>
-                  <strong>{session ? (session.isAdmin ? "Admin" : "Player") : "Ready"}</strong>
-                </div>
-                <div className="mini-stat">
-                  <span className="muted-label">Route</span>
-                  <strong className="mono">{pathname}</strong>
+            <div className="hero-rail-grid">
+              <div className="rail-card">
+                <div className="rail-label">Flow</div>
+                <div className="rail-value">{session ? "Ready to move" : "Sign in to begin"}</div>
+                <div className="rail-copy">
+                  {session
+                    ? "Open contests, track rankings, and jump straight into live gameplay."
+                    : "Enter through one global sign-in, then continue into the correct company or college workspace."}
                 </div>
               </div>
-              <div className="hero-note muted">
-                This build keeps the live backend flows intact while presenting a brighter event-ready surface for local and LAN testing.
+              <div className="rail-card">
+                <div className="rail-label">Navigation</div>
+                <div className="rail-copy">
+                  Home, dashboard, admin, live room, and leaderboard views stay grouped inside one cleaner shell.
+                </div>
               </div>
             </div>
           </div>
@@ -144,7 +204,8 @@ export function SiteShell({
               </button>
             </div>
             <LoginCard
-              targetHref={pathname === "/admin" ? "/admin" : "/dashboard"}
+              tenantSlug={routeTenantSlug}
+              targetHref={pathname}
               onSuccess={() => {
                 setSession(getStoredSession());
                 setLoginOpen(false);

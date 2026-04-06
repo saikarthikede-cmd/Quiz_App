@@ -10,12 +10,12 @@ Production-oriented real-time quiz platform with:
 
 ## Current local auth/payment mode
 
-Two temporary backend substitutions are active until company credentials are available:
+The app uses Google OAuth for real user sign-in and a manual admin-reviewed add-money flow for wallet top-ups:
 
-- Google OAuth is temporarily replaced by email-based login at `POST /auth/dev-login`
-- Payment gateway top-up is temporarily replaced by `POST /wallet/add-money`
+- Google sign-in is handled through `POST /auth/google`
+- Wallet top-ups are requested through `POST /wallet/add-money` and reviewed by an admin
 
-Both substitutions are clearly commented in code and should be swapped later without changing the rest of the backend contract.
+For automated local verification, the repo also includes an internal test-session helper used by the Docker E2E scripts. That helper is for automation only and is not part of the public app flow.
 
 ## Prerequisites
 
@@ -149,87 +149,19 @@ Test-NetConnection localhost -Port 3000
 
 ## Demo users
 
-- `saikarthik.ede@fissionlabs.com` for admin access
-- any other Google-authenticated or dev-login email for player access
+- the first user created inside a tenant becomes that tenant admin
+- any other Google-authenticated user in the same tenant can join as a player
 
 ## API smoke test
 
 ```powershell
-$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
-
-$login = Invoke-RestMethod `
-  -Uri 'http://localhost:4000/auth/dev-login' `
-  -Method Post `
-  -WebSession $session `
-  -ContentType 'application/json' `
-  -Body '{"email":"demo.player@example.com","name":"Demo Player"}'
-
-$headers = @{ Authorization = "Bearer $($login.access_token)" }
-
-Invoke-RestMethod `
-  -Uri 'http://localhost:4000/wallet/balance' `
-  -Method Get `
-  -Headers $headers
-
-Invoke-RestMethod `
-  -Uri 'http://localhost:4000/wallet/add-money' `
-  -Method Post `
-  -Headers $headers `
-  -ContentType 'application/json' `
-  -Body '{"amount":50}'
-
-Invoke-RestMethod http://localhost:4000/contests
+pnpm docker:app:smoke
 ```
 
 ## Admin contest flow
 
 ```powershell
-$admin = Invoke-RestMethod `
-  -Uri 'http://localhost:4000/auth/dev-login' `
-  -Method Post `
-  -ContentType 'application/json' `
-  -Body '{"email":"saikarthik.ede@fissionlabs.com","name":"Admin User"}'
-
-$adminHeaders = @{ Authorization = "Bearer $($admin.access_token)" }
-$startsAt = (Get-Date).ToUniversalTime().AddMinutes(2).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-
-$contestBody = @{
-  title = "Restart Live Test"
-  starts_at = $startsAt
-  entry_fee = 10
-  max_members = 100
-  prize_rule = "all_correct"
-} | ConvertTo-Json
-
-$contest = Invoke-RestMethod `
-  -Uri 'http://localhost:4000/admin/contests' `
-  -Method Post `
-  -Headers $adminHeaders `
-  -ContentType 'application/json' `
-  -Body $contestBody
-
-$contestId = $contest.contest.id
-
-Invoke-RestMethod `
-  -Uri "http://localhost:4000/admin/contests/$contestId/questions" `
-  -Method Post `
-  -Headers $adminHeaders `
-  -ContentType 'application/json' `
-  -Body '{"seq":1,"body":"Capital of India?","option_a":"Mumbai","option_b":"New Delhi","option_c":"Chennai","option_d":"Kolkata","correct_option":"b","time_limit_sec":15}'
-
-Invoke-RestMethod `
-  -Uri "http://localhost:4000/admin/contests/$contestId/questions" `
-  -Method Post `
-  -Headers $adminHeaders `
-  -ContentType 'application/json' `
-  -Body '{"seq":2,"body":"2 + 2 = ?","option_a":"3","option_b":"4","option_c":"5","option_d":"6","correct_option":"b","time_limit_sec":15}'
-
-Invoke-RestMethod `
-  -Uri "http://localhost:4000/admin/contests/$contestId/publish" `
-  -Method Post `
-  -Headers $adminHeaders `
-  -ContentType 'application/json' `
-  -Body '{}'
+pnpm docker:app:e2e
 ```
 
 ## Socket gameplay test

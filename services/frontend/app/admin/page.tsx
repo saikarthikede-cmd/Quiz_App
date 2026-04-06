@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { LoginCard } from "../../components/login-card";
@@ -9,17 +10,28 @@ import { useFrontendSession } from "../../components/session-panel";
 import {
   addQuestion,
   creditUserWallet,
+  createTenant,
   createContest,
+  deleteAdminUser,
+  deleteTenant,
+  deletePlatformUser,
+  getPlatformTenantAdminRequests,
   getAdminContests,
   getAdminUsers,
   getAdminWalletRequests,
   getJobs,
+  getPlatformUsers,
+  getTenants,
   publishContest,
   rebuildContestCache,
   recoverContest,
+  reviewPlatformAccessRequest,
   reviewWalletRequest,
-  retryJob
+  retryJob,
+  setPlatformCompanyAdmin,
+  updateTenant
 } from "../../lib/api";
+import { buildTenantPath } from "../../lib/tenant";
 
 interface AdminContest {
   id: string;
@@ -28,6 +40,8 @@ interface AdminContest {
   member_count: number;
   starts_at: string;
   prize_pool: string;
+  question_count: string;
+  start_job_status: string;
 }
 
 interface JobItem {
@@ -48,12 +62,15 @@ interface AdminUser {
   wallet_balance: string;
   is_admin: boolean;
   is_banned: boolean;
+  user_type?: "individual" | "student" | "employee" | null;
+  membership_type?: string | null;
   created_at: string;
 }
 
 interface WalletRequestItem {
   id: string;
   user_id: string;
+  request_type: "add_money" | "redeem";
   amount: string;
   status: "pending" | "approved" | "rejected";
   created_at: string;
@@ -64,14 +81,107 @@ interface WalletRequestItem {
   user_email: string;
 }
 
+interface TenantItem {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  company_type: "college" | "company";
+  code_or_reference_id: string | null;
+  id_pattern: string | null;
+  is_active: boolean;
+  created_at: string;
+  user_count: string;
+  admin_count: string;
+  contest_count: string;
+}
+
+interface PlatformUserItem extends AdminUser {
+  is_platform_admin: boolean;
+  tenant_id: string;
+  tenant_name: string;
+  tenant_slug: string;
+  user_type?: "individual" | "student" | "employee" | null;
+  membership_type: string | null;
+  onboarding_completed: boolean;
+}
+
+function canPromoteToCompanyAdmin(user: PlatformUserItem, tenantSlug: string | null) {
+  return !user.is_platform_admin && tenantSlug !== "default" && user.user_type === "employee";
+}
+
+function getCompanyAdminActionHint(user: PlatformUserItem, tenantSlug: string | null) {
+  if (user.is_platform_admin) {
+    return "Platform admin access is managed separately.";
+  }
+
+  if (tenantSlug === "default") {
+    return "Public/default users do not use company-admin access.";
+  }
+
+  if (user.user_type !== "employee") {
+    return "Only employees of this company can become company admins.";
+  }
+
+  return null;
+}
+
+interface TenantAdminOverview {
+  tenant: {
+    id: string;
+    name: string;
+    slug: string;
+  };
+  admins: Array<{
+    id: string;
+    email: string;
+    name: string;
+    user_type: string | null;
+    created_at: string;
+  }>;
+  admin_requests: Array<{
+    id: string;
+    request_type: "admin_access";
+    status: "pending";
+    notes: string | null;
+    created_at: string;
+    user_id: string;
+    user_name: string;
+    user_email: string;
+  }>;
+  exit_requests: Array<{
+    id: string;
+    request_type: "exit";
+    status: "pending";
+    notes: string | null;
+    created_at: string;
+    user_id: string;
+    user_name: string;
+    user_email: string;
+  }>;
+}
+
 export default function AdminPage() {
+  const params = useParams<{ slug?: string }>();
+  const router = useRouter();
+  const tenantSlug = typeof params.slug === "string" ? params.slug : null;
   const { session, isReady } = useFrontendSession();
   const [contests, setContests] = useState<AdminContest[]>([]);
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [platformUsers, setPlatformUsers] = useState<PlatformUserItem[]>([]);
   const [walletRequests, setWalletRequests] = useState<WalletRequestItem[]>([]);
+  const [tenants, setTenants] = useState<TenantItem[]>([]);
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
+  const [selectedTenantView, setSelectedTenantView] = useState<"users" | "admins">("users");
+  const [selectedTenantOverview, setSelectedTenantOverview] = useState<TenantAdminOverview | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeUserAction, setActiveUserAction] = useState<{
+    userId: string;
+    label: string;
+    kind: "pending" | "success" | "error";
+  } | null>(null);
   const [showAllContests, setShowAllContests] = useState(false);
   const [pageLoading, setPageLoading] = useState(false);
   const latestLoadId = useRef(0);
@@ -99,18 +209,27 @@ export default function AdminPage() {
     userId: "",
     amount: "50"
   });
+  const [tenantForm, setTenantForm] = useState({
+    name: "",
+    slug: "",
+    plan: "standard" as "standard" | "pro" | "enterprise",
+    company_type: "company" as "college" | "company",
+    code_or_reference_id: "",
+    id_pattern: ""
+  });
 
-  async function loadAdminData(accessToken: string) {
+  async function loadAdminData(accessToken: string, isPlatformAdmin = false) {
     const loadId = ++latestLoadId.current;
     setPageLoading(true);
     setError(null);
 
     try {
-      const [contestResult, jobsResult, usersResult, walletRequestsResult] = await Promise.all([
+      const [contestResult, jobsResult, usersResult, walletRequestsResult, tenantsResult] = await Promise.all([
         getAdminContests(accessToken),
         getJobs(accessToken),
         getAdminUsers(accessToken),
-        getAdminWalletRequests(accessToken)
+        getAdminWalletRequests(accessToken),
+        isPlatformAdmin ? getTenants(accessToken) : Promise.resolve({ tenants: [] as TenantItem[] })
       ]);
 
       if (loadId !== latestLoadId.current) {
@@ -121,6 +240,7 @@ export default function AdminPage() {
       setJobs(jobsResult.jobs);
       setUsers(usersResult.users);
       setWalletRequests(walletRequestsResult.requests);
+      setTenants(tenantsResult.tenants);
 
       if (!selectedContestId && contestResult.contests.length > 0) {
         setSelectedContestId(contestResult.contests[0].id);
@@ -146,21 +266,115 @@ export default function AdminPage() {
     }
   }
 
+  async function loadPlatformOverview(accessToken: string) {
+    const loadId = ++latestLoadId.current;
+    setPageLoading(true);
+    setError(null);
+
+    try {
+      const [tenantsResult, platformUsersResult] = await Promise.all([
+        getTenants(accessToken),
+        getPlatformUsers(accessToken)
+      ]);
+
+      if (loadId !== latestLoadId.current) {
+        return;
+      }
+
+      setTenants(tenantsResult.tenants);
+      setPlatformUsers(platformUsersResult.users);
+    } catch (loadError) {
+      if (loadId !== latestLoadId.current) {
+        return;
+      }
+
+      setError(loadError instanceof Error ? loadError.message : "Failed to load platform overview");
+    } finally {
+      if (loadId === latestLoadId.current) {
+        setPageLoading(false);
+      }
+    }
+  }
+
+  async function loadTenantManagement(accessToken: string, tenantId: string) {
+    try {
+      const result = await getPlatformTenantAdminRequests(accessToken, tenantId);
+      setSelectedTenantOverview(result);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load tenant management data");
+    }
+  }
+
   useEffect(() => {
-    if (!session?.accessToken || !session.isAdmin) {
+    if (!isReady) {
       return;
     }
 
-    void loadAdminData(session.accessToken);
-  }, [session]);
+    if (!tenantSlug && !session?.isPlatformAdmin) {
+      router.replace("/");
+      return;
+    }
+  }, [isReady, router, session?.isPlatformAdmin, tenantSlug]);
+
+  useEffect(() => {
+    if (!session?.accessToken) {
+      return;
+    }
+
+    if (!tenantSlug) {
+      if (session.isPlatformAdmin) {
+        void loadPlatformOverview(session.accessToken);
+      }
+      return;
+    }
+
+    if (session.isAdmin || session.isPlatformAdmin) {
+      void loadAdminData(session.accessToken, session.isPlatformAdmin);
+    }
+  }, [session, tenantSlug]);
+
+  useEffect(() => {
+    if (!session?.isPlatformAdmin || !selectedTenantId) {
+      return;
+    }
+
+    void loadTenantManagement(session.accessToken, selectedTenantId);
+  }, [selectedTenantId, session]);
 
   const selectedContest = useMemo(
     () => contests.find((contest) => contest.id === selectedContestId) ?? null,
     [contests, selectedContestId]
   );
+  const selectedTenant = useMemo(
+    () => tenants.find((tenant) => tenant.id === selectedTenantId) ?? null,
+    [selectedTenantId, tenants]
+  );
+  const selectedTenantUsers = useMemo(
+    () => (selectedTenantId ? platformUsers.filter((user) => user.tenant_id === selectedTenantId) : []),
+    [platformUsers, selectedTenantId]
+  );
   const activeJobs = jobs.filter((job) => job.status !== "failed").length;
   const pendingWalletRequests = walletRequests.filter((request) => request.status === "pending").length;
   const visibleContests = contests.slice(0, 3);
+
+  function renderUserActionNotice(userId: string) {
+    if (!activeUserAction || activeUserAction.userId !== userId) {
+      return null;
+    }
+
+    const className =
+      activeUserAction.kind === "error"
+        ? "notice error"
+        : activeUserAction.kind === "success"
+          ? "notice"
+          : "notice warn";
+
+    return (
+      <div className={className} style={{ marginTop: 10 }}>
+        {activeUserAction.label}
+      </div>
+    );
+  }
 
   if (!isReady) {
     return (
@@ -170,23 +384,550 @@ export default function AdminPage() {
     );
   }
 
-  if (!session) {
+  if (!tenantSlug && !session?.isPlatformAdmin) {
     return (
-      <SiteShell
-        title="Admin Console"
-        subtitle="Sign in as the local admin account to create contests, publish jobs, and inspect queue state."
-      >
-        <LoginCard targetHref="/admin" />
+      <SiteShell title="Admin Console" subtitle="Resolving organization workspace...">
+        <div className="notice">Redirecting to organization selection...</div>
       </SiteShell>
     );
   }
 
-  if (!session.isAdmin) {
+  if (!session) {
+    return (
+      <SiteShell
+        title="Admin Console"
+        subtitle="Sign in as the main admin or a company admin to open the correct management surface."
+      >
+        <LoginCard tenantSlug={tenantSlug} targetHref={tenantSlug ? buildTenantPath(tenantSlug, "/admin") : "/admin"} />
+      </SiteShell>
+    );
+  }
+
+  if (!session.isAdmin && !session.isPlatformAdmin) {
     return (
       <SiteShell title="Admin Console" subtitle="This route is reserved for admin users.">
         <div className="notice error">
-          The current session does not have admin access. Sign in using
-          <span className="mono"> saikarthik.ede@fissionlabs.com</span>.
+          The current session does not have admin access for this workspace.
+        </div>
+      </SiteShell>
+    );
+  }
+
+  if (!tenantSlug && session.isPlatformAdmin) {
+    return (
+      <SiteShell
+        title="Main Admin Console"
+        subtitle="Create companies, manage company admins, and open any company in admin or player mode from one platform workspace."
+      >
+        {pageLoading ? <div className="notice">Refreshing platform data...</div> : null}
+        {message ? <div className="notice">{message}</div> : null}
+        {error ? <div className="notice error" style={{ marginTop: 14 }}>{error}</div> : null}
+
+        <section className="signal-grid" style={{ marginTop: 20 }}>
+          <div className="signal-card">
+            <div className="signal-label">Companies</div>
+            <div className="signal-value">{tenants.length}</div>
+          </div>
+          <div className="signal-card gold">
+            <div className="signal-label">Users</div>
+            <div className="signal-value">{platformUsers.length}</div>
+          </div>
+          <div className="signal-card rose">
+            <div className="signal-label">Company Admins</div>
+            <div className="signal-value">{platformUsers.filter((user) => user.is_admin && !user.is_platform_admin).length}</div>
+          </div>
+        </section>
+
+        <div className="grid two" style={{ marginTop: 20 }}>
+          <div className="card">
+            <div className="eyebrow">Create Company</div>
+            <h3 style={{ marginTop: 16, marginBottom: 10 }}>Register a college or company before users onboard</h3>
+            <div className="grid two">
+              <label className="field">
+                <span>Name</span>
+                <input value={tenantForm.name} onChange={(event) => setTenantForm((current) => ({ ...current, name: event.target.value }))} />
+              </label>
+              <label className="field">
+                <span>Slug</span>
+                <input value={tenantForm.slug} onChange={(event) => setTenantForm((current) => ({ ...current, slug: event.target.value.toLowerCase() }))} />
+              </label>
+            </div>
+            <div className="grid two">
+              <label className="field">
+                <span>Type</span>
+                <select value={tenantForm.company_type} onChange={(event) => setTenantForm((current) => ({ ...current, company_type: event.target.value as "college" | "company" }))}>
+                  <option value="company">company</option>
+                  <option value="college">college</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Plan</span>
+                <select value={tenantForm.plan} onChange={(event) => setTenantForm((current) => ({ ...current, plan: event.target.value as "standard" | "pro" | "enterprise" }))}>
+                  <option value="standard">standard</option>
+                  <option value="pro">pro</option>
+                  <option value="enterprise">enterprise</option>
+                </select>
+              </label>
+            </div>
+            <div className="grid two">
+              <label className="field">
+                <span>Reference Code</span>
+                <input value={tenantForm.code_or_reference_id} onChange={(event) => setTenantForm((current) => ({ ...current, code_or_reference_id: event.target.value }))} />
+              </label>
+              <label className="field">
+                <span>ID Pattern</span>
+                <input value={tenantForm.id_pattern} onChange={(event) => setTenantForm((current) => ({ ...current, id_pattern: event.target.value }))} />
+              </label>
+            </div>
+            <button
+              type="button"
+              className="solid-button"
+              onClick={() => {
+                setMessage(null);
+                setError(null);
+                void (async () => {
+                  try {
+                    const result = await createTenant(session.accessToken, tenantForm);
+                    setMessage(`Created company ${result.tenant.slug}`);
+                    setTenantForm({
+                      name: "",
+                      slug: "",
+                      plan: "standard",
+                      company_type: "company",
+                      code_or_reference_id: "",
+                      id_pattern: ""
+                    });
+                    await loadPlatformOverview(session.accessToken);
+                  } catch (createError) {
+                    setError(createError instanceof Error ? createError.message : "Company creation failed");
+                  }
+                })();
+              }}
+            >
+              Create Company
+            </button>
+          </div>
+
+          <div className="card">
+            <div className="eyebrow">Company Directory</div>
+            <h3 style={{ marginTop: 16, marginBottom: 10 }}>Open company consoles or manage users and admin requests</h3>
+            <div className="list">
+              {tenants.map((tenant) => (
+                <div key={tenant.id} className="notice">
+                  <div className="stack-row spread">
+                    <div>
+                      <strong>{tenant.name}</strong>
+                      <div className="muted"><span className="mono">{tenant.slug}</span> - {tenant.company_type}</div>
+                    </div>
+                    <div className="pill-row">
+                      <span className="pill gold">{tenant.user_count} users</span>
+                      <span className="pill">{tenant.admin_count} admins</span>
+                    </div>
+                  </div>
+                  <div className="stack-row" style={{ marginTop: 12 }}>
+                    <Link href={buildTenantPath(tenant.slug, "/admin")} className="solid-button">Open Admin Mode</Link>
+                    <Link href={buildTenantPath(tenant.slug, "/dashboard")} className="ghost-button">Open Player Mode</Link>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => {
+                        setSelectedTenantId(tenant.id);
+                        setSelectedTenantView("users");
+                        setSelectedTenantOverview(null);
+                      }}
+                    >
+                      Manage Users
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => {
+                        setSelectedTenantId(tenant.id);
+                        setSelectedTenantView("admins");
+                        void loadTenantManagement(session.accessToken, tenant.id);
+                      }}
+                    >
+                      Manage Admins
+                    </button>
+                    {tenant.slug !== "default" ? (
+                      <button
+                        type="button"
+                        className="rose-button"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              await deleteTenant(session.accessToken, tenant.id);
+                              setMessage(`Deleted company ${tenant.slug}`);
+                              if (selectedTenantId === tenant.id) {
+                                setSelectedTenantId(null);
+                                setSelectedTenantOverview(null);
+                              }
+                              await loadPlatformOverview(session.accessToken);
+                            } catch (tenantError) {
+                              setError(tenantError instanceof Error ? tenantError.message : "Tenant delete failed");
+                            }
+                          })();
+                        }}
+                      >
+                        Delete Company
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {selectedTenant ? (
+          <div className="card" style={{ marginTop: 20 }}>
+            <div className="eyebrow">
+              {selectedTenantView === "users" ? "Manage Users" : "Manage Admins"}
+            </div>
+            <h3 style={{ marginTop: 16, marginBottom: 10 }}>
+              {selectedTenant.name} ({selectedTenant.slug})
+            </h3>
+
+            {selectedTenantView === "users" ? (
+              <div className="list" style={{ marginTop: 16 }}>
+                {selectedTenantUsers.length === 0 ? (
+                  <div className="notice warn">No users in this company yet.</div>
+                ) : null}
+                {selectedTenantUsers.map((user) => (
+                  <div key={user.id} className="notice">
+                    {(() => {
+                      const adminActionHint = getCompanyAdminActionHint(user, selectedTenant.slug);
+                      const canToggleCompanyAdmin =
+                        user.is_admin || canPromoteToCompanyAdmin(user, selectedTenant.slug);
+
+                      return (
+                        <>
+                    <div className="stack-row spread">
+                      <div>
+                        <strong>{user.name}</strong>
+                        <div className="muted">{user.email}</div>
+                      </div>
+                      <div className="pill-row">
+                        <span className="pill gold">{user.user_type ?? "unassigned"}</span>
+                        {user.is_admin ? <span className="pill">Admin</span> : null}
+                      </div>
+                    </div>
+                    {!user.is_platform_admin ? (
+                      <div className="stack-row" style={{ marginTop: 12 }}>
+                        {canToggleCompanyAdmin ? (
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() => {
+                              void (async () => {
+                                try {
+                                setMessage(null);
+                                setError(null);
+                                setActiveUserAction({
+                                  userId: user.id,
+                                  label: `${!user.is_admin ? "Promoting" : "Removing admin access for"} ${user.name}...`,
+                                  kind: "pending"
+                                });
+                                await setPlatformCompanyAdmin(session.accessToken, user.id, !user.is_admin);
+                                setMessage(`${user.name} is now ${!user.is_admin ? "a company admin" : "a player"}`);
+                                setActiveUserAction({
+                                  userId: user.id,
+                                  label: `${user.name} is now ${!user.is_admin ? "a company admin" : "a player"}.`,
+                                  kind: "success"
+                                });
+                                await loadPlatformOverview(session.accessToken);
+                                await loadTenantManagement(session.accessToken, selectedTenant.id);
+                              } catch (actionError) {
+                                setActiveUserAction({
+                                  userId: user.id,
+                                  label: actionError instanceof Error ? actionError.message : "Admin update failed",
+                                  kind: "error"
+                                });
+                                setError(actionError instanceof Error ? actionError.message : "Admin update failed");
+                              }
+                            })();
+                          }}
+                          >
+                            {user.is_admin ? "Remove Admin" : "Make Admin"}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="rose-button"
+                          onClick={() => {
+                            void (async () => {
+                              try {
+                                setMessage(null);
+                                setError(null);
+                                setActiveUserAction({
+                                  userId: user.id,
+                                  label: `Removing ${user.name}...`,
+                                  kind: "pending"
+                                });
+                                await deletePlatformUser(session.accessToken, user.id);
+                                setMessage(`Removed ${user.name}`);
+                                setActiveUserAction({
+                                  userId: user.id,
+                                  label: `${user.name} was removed successfully.`,
+                                  kind: "success"
+                                });
+                                await loadPlatformOverview(session.accessToken);
+                                await loadTenantManagement(session.accessToken, selectedTenant.id);
+                              } catch (actionError) {
+                                setActiveUserAction({
+                                  userId: user.id,
+                                  label: actionError instanceof Error ? actionError.message : "User removal failed",
+                                  kind: "error"
+                                });
+                                setError(actionError instanceof Error ? actionError.message : "User removal failed");
+                              }
+                            })();
+                          }}
+                        >
+                          Remove User
+                        </button>
+                      </div>
+                    ) : null}
+                    {!canToggleCompanyAdmin && adminActionHint ? (
+                      <div className="muted" style={{ marginTop: 10 }}>{adminActionHint}</div>
+                    ) : null}
+                    {renderUserActionNotice(user.id)}
+                        </>
+                      );
+                    })()}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="list" style={{ marginTop: 16 }}>
+                {selectedTenantOverview?.admins.length ? (
+                  <div className="notice">
+                    <strong>Current approved admins</strong>
+                    <div className="pill-row" style={{ marginTop: 10 }}>
+                      {selectedTenantOverview.admins.map((admin) => (
+                        <span key={admin.id} className="pill gold">
+                          {admin.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="notice warn">No approved admins for this company yet.</div>
+                )}
+
+                {selectedTenantOverview?.admin_requests.map((adminRequest) => (
+                  <div key={adminRequest.id} className="notice">
+                    <strong>{adminRequest.user_name}</strong>
+                    <div className="muted">{adminRequest.user_email}</div>
+                    <div className="muted">Requested admin access on {new Date(adminRequest.created_at).toLocaleString()}</div>
+                    {adminRequest.notes ? <div className="muted" style={{ marginTop: 8 }}>{adminRequest.notes}</div> : null}
+                    <div className="stack-row" style={{ marginTop: 12 }}>
+                      <button
+                        type="button"
+                        className="solid-button"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              setMessage(null);
+                              setError(null);
+                              await reviewPlatformAccessRequest(session.accessToken, adminRequest.id, "approved");
+                              setMessage(`Approved admin access for ${adminRequest.user_name}`);
+                              await loadPlatformOverview(session.accessToken);
+                              await loadTenantManagement(session.accessToken, selectedTenant.id);
+                            } catch (actionError) {
+                              setError(actionError instanceof Error ? actionError.message : "Admin request approval failed");
+                            }
+                          })();
+                        }}
+                      >
+                        Accept Admin Request
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              setMessage(null);
+                              setError(null);
+                              await reviewPlatformAccessRequest(session.accessToken, adminRequest.id, "rejected");
+                              setMessage(`Rejected admin access for ${adminRequest.user_name}`);
+                              await loadPlatformOverview(session.accessToken);
+                              await loadTenantManagement(session.accessToken, selectedTenant.id);
+                            } catch (actionError) {
+                              setError(actionError instanceof Error ? actionError.message : "Admin request rejection failed");
+                            }
+                          })();
+                        }}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {selectedTenantOverview?.exit_requests.map((exitRequest) => (
+                  <div key={exitRequest.id} className="notice">
+                    <strong>{exitRequest.user_name}</strong>
+                    <div className="muted">{exitRequest.user_email}</div>
+                    <div className="muted">Requested exit on {new Date(exitRequest.created_at).toLocaleString()}</div>
+                    {exitRequest.notes ? <div className="muted" style={{ marginTop: 8 }}>{exitRequest.notes}</div> : null}
+                    <div className="stack-row" style={{ marginTop: 12 }}>
+                      <button
+                        type="button"
+                        className="solid-button"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              setMessage(null);
+                              setError(null);
+                              await reviewPlatformAccessRequest(session.accessToken, exitRequest.id, "approved");
+                              setMessage(`Approved exit for ${exitRequest.user_name}`);
+                              await loadPlatformOverview(session.accessToken);
+                              await loadTenantManagement(session.accessToken, selectedTenant.id);
+                            } catch (actionError) {
+                              setError(actionError instanceof Error ? actionError.message : "Exit approval failed");
+                            }
+                          })();
+                        }}
+                      >
+                        Approve Exit
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              setMessage(null);
+                              setError(null);
+                              await reviewPlatformAccessRequest(session.accessToken, exitRequest.id, "rejected");
+                              setMessage(`Rejected exit for ${exitRequest.user_name}`);
+                              await loadPlatformOverview(session.accessToken);
+                              await loadTenantManagement(session.accessToken, selectedTenant.id);
+                            } catch (actionError) {
+                              setError(actionError instanceof Error ? actionError.message : "Exit rejection failed");
+                            }
+                          })();
+                        }}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        <div className="card" style={{ marginTop: 20 }}>
+          <div className="eyebrow">Global Users</div>
+          <div className="list" style={{ marginTop: 16 }}>
+            {platformUsers.map((user) => (
+              <div key={user.id} className="notice">
+                {(() => {
+                  const adminActionHint = getCompanyAdminActionHint(user, user.tenant_slug);
+                  const canToggleCompanyAdmin = user.is_admin || canPromoteToCompanyAdmin(user, user.tenant_slug);
+
+                  return (
+                    <>
+                <div className="stack-row spread">
+                  <div>
+                    <strong>{user.name}</strong>
+                    <div className="muted">{user.email}</div>
+                    <div className="muted"><span className="mono">{user.tenant_slug}</span> - {user.tenant_name}</div>
+                  </div>
+                  <div className="pill-row">
+                    {user.is_platform_admin ? <span className="pill rose">Main Admin</span> : null}
+                    {user.is_admin && !user.is_platform_admin ? <span className="pill">Company Admin</span> : null}
+                    <span className="pill gold">{user.membership_type ?? "unassigned"}</span>
+                  </div>
+                </div>
+                {!user.is_platform_admin ? (
+                  <div className="stack-row" style={{ marginTop: 12 }}>
+                    {canToggleCompanyAdmin ? (
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                            setMessage(null);
+                            setError(null);
+                            setActiveUserAction({
+                              userId: user.id,
+                              label: `${!user.is_admin ? "Promoting" : "Removing admin access for"} ${user.name}...`,
+                              kind: "pending"
+                            });
+                            await setPlatformCompanyAdmin(session.accessToken, user.id, !user.is_admin);
+                            setMessage(`${user.name} is now ${!user.is_admin ? "a company admin" : "a player"}`);
+                            setActiveUserAction({
+                              userId: user.id,
+                              label: `${user.name} is now ${!user.is_admin ? "a company admin" : "a player"}.`,
+                              kind: "success"
+                            });
+                            await loadPlatformOverview(session.accessToken);
+                          } catch (actionError) {
+                            setActiveUserAction({
+                              userId: user.id,
+                              label: actionError instanceof Error ? actionError.message : "Admin update failed",
+                              kind: "error"
+                            });
+                            setError(actionError instanceof Error ? actionError.message : "Admin update failed");
+                          }
+                        })();
+                        }}
+                      >
+                        {user.is_admin ? "Remove Admin" : "Make Admin"}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="rose-button"
+                      onClick={() => {
+                        void (async () => {
+                          try {
+                            setMessage(null);
+                            setError(null);
+                            setActiveUserAction({
+                              userId: user.id,
+                              label: `Removing ${user.name}...`,
+                              kind: "pending"
+                            });
+                            await deletePlatformUser(session.accessToken, user.id);
+                            setMessage(`Removed ${user.name}`);
+                            setActiveUserAction({
+                              userId: user.id,
+                              label: `${user.name} was removed successfully.`,
+                              kind: "success"
+                            });
+                            await loadPlatformOverview(session.accessToken);
+                          } catch (actionError) {
+                            setActiveUserAction({
+                              userId: user.id,
+                              label: actionError instanceof Error ? actionError.message : "User removal failed",
+                              kind: "error"
+                            });
+                            setError(actionError instanceof Error ? actionError.message : "User removal failed");
+                          }
+                        })();
+                      }}
+                    >
+                      Remove User
+                    </button>
+                  </div>
+                ) : null}
+                {!canToggleCompanyAdmin && adminActionHint ? (
+                  <div className="muted" style={{ marginTop: 10 }}>{adminActionHint}</div>
+                ) : null}
+                {renderUserActionNotice(user.id)}
+                    </>
+                  );
+                })()}
+              </div>
+            ))}
+          </div>
         </div>
       </SiteShell>
     );
@@ -195,11 +936,180 @@ export default function AdminPage() {
   return (
     <SiteShell
       title="Admin Console"
-      subtitle="Create draft contests, attach questions, publish schedules, and monitor queue, cache, and payout paths from one brighter ops-ready control surface."
+      subtitle="Create draft contests, attach questions, publish schedules, and monitor queue, cache, and payout paths from one sharper operations surface."
     >
       {pageLoading ? <div className="notice">Refreshing admin data...</div> : null}
       {message ? <div className="notice">{message}</div> : null}
       {error ? <div className="notice error" style={{ marginTop: 14 }}>{error}</div> : null}
+
+      <section className="spotlight-card" style={{ marginTop: 20 }}>
+        <div className="spotlight-grid">
+          <div className="spotlight-copy">
+            <div className="eyebrow">Operations View</div>
+            <h2 className="spotlight-title">Run contests, control payouts, and keep the tenant healthy from one place.</h2>
+            <p className="muted hero-kicker">
+              The admin surface now keeps creation, moderation, job tracking, and provisioning closer together so daily actions feel faster.
+            </p>
+            <div className="spotlight-actions">
+              <button
+                type="button"
+                className="solid-button"
+                onClick={() => {
+                  void loadAdminData(session.accessToken, session.isPlatformAdmin);
+                }}
+              >
+                Refresh Admin Data
+              </button>
+              {selectedContestId ? (
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    setMessage(`Selected contest ${selectedContestId}`);
+                  }}
+                >
+                  Review Selected Contest
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="spotlight-stats">
+            <div className="rail-card">
+              <div className="rail-label">Contest Inventory</div>
+              <div className="rail-value">{contests.length}</div>
+              <div className="rail-copy">Draft, scheduled, live, ended, and cancelled rooms tracked together.</div>
+            </div>
+            <div className="rail-card">
+              <div className="rail-label">Pending Money Requests</div>
+              <div className="rail-value">{pendingWalletRequests}</div>
+              <div className="rail-copy">Add-money and redeem requests waiting on admin action before balances change.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {session.isPlatformAdmin ? (
+        <div className="card" style={{ marginTop: 20 }}>
+          <div className="eyebrow">Tenant Provisioning</div>
+          <h3 style={{ marginTop: 16, marginBottom: 10 }}>Create and manage organization spaces</h3>
+          <div className="grid two">
+            <label className="field">
+              <span>Organization Name</span>
+              <input
+                value={tenantForm.name}
+                onChange={(event) =>
+                  setTenantForm((current) => ({ ...current, name: event.target.value }))
+                }
+                placeholder="Acme Corp"
+              />
+            </label>
+            <label className="field">
+              <span>Slug</span>
+              <input
+                value={tenantForm.slug}
+                onChange={(event) =>
+                  setTenantForm((current) => ({ ...current, slug: event.target.value.toLowerCase() }))
+                }
+                placeholder="acme"
+              />
+            </label>
+          </div>
+          <label className="field">
+            <span>Plan</span>
+            <select
+              value={tenantForm.plan}
+              onChange={(event) =>
+                setTenantForm((current) => ({
+                  ...current,
+                  plan: event.target.value as "standard" | "pro" | "enterprise"
+                }))
+              }
+            >
+              <option value="standard">standard</option>
+              <option value="pro">pro</option>
+              <option value="enterprise">enterprise</option>
+            </select>
+          </label>
+          <div className="stack-row">
+            <button
+              type="button"
+              className="solid-button"
+              onClick={() => {
+                setMessage(null);
+                setError(null);
+
+                void (async () => {
+                  try {
+                    const result = await createTenant(session.accessToken, tenantForm);
+                    setMessage(`Created tenant ${result.tenant.slug}`);
+                    setTenantForm({
+                      name: "",
+                      slug: "",
+                      plan: "standard",
+                      company_type: "company",
+                      code_or_reference_id: "",
+                      id_pattern: ""
+                    });
+                    await loadAdminData(session.accessToken, session.isPlatformAdmin);
+                  } catch (tenantError) {
+                    setError(tenantError instanceof Error ? tenantError.message : "Tenant creation failed");
+                  }
+                })();
+              }}
+            >
+              Create Tenant
+            </button>
+          </div>
+
+          <div className="list" style={{ marginTop: 18 }}>
+            {tenants.map((tenant) => (
+              <div key={tenant.id} className="notice">
+                <div className="stack-row spread">
+                  <div>
+                    <strong>{tenant.name}</strong>
+                    <div className="muted">
+                      <span className="mono">{tenant.slug}</span> - {tenant.company_type} - {tenant.plan}
+                    </div>
+                  </div>
+                  <div className="pill-row">
+                    <span className="pill">{tenant.is_active ? "active" : "inactive"}</span>
+                    <span className="pill gold">{tenant.user_count} users</span>
+                    <span className="pill">{tenant.admin_count} admins</span>
+                    <span className="pill rose">{tenant.contest_count} contests</span>
+                  </div>
+                </div>
+                <div className="stack-row" style={{ marginTop: 12 }}>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => {
+                      setMessage(null);
+                      setError(null);
+
+                      void (async () => {
+                        try {
+                          const result = await updateTenant(session.accessToken, tenant.id, {
+                            is_active: !tenant.is_active
+                          });
+                          setMessage(
+                            `${result.tenant.slug} is now ${result.tenant.is_active ? "active" : "inactive"}`
+                          );
+                          await loadAdminData(session.accessToken, session.isPlatformAdmin);
+                        } catch (tenantError) {
+                          setError(tenantError instanceof Error ? tenantError.message : "Tenant update failed");
+                        }
+                      })();
+                    }}
+                  >
+                    {tenant.is_active ? "Deactivate" : "Activate"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <section className="signal-grid" style={{ marginTop: 20 }}>
         <div className="signal-card">
@@ -215,7 +1125,7 @@ export default function AdminPage() {
         <div className="signal-card rose">
           <div className="signal-label">Wallet Requests</div>
           <div className="signal-value">{pendingWalletRequests}</div>
-          <div className="signal-subtitle">Pending top-up requests waiting for admin approval before balances are credited.</div>
+          <div className="signal-subtitle">Pending add-money and redeem requests waiting for admin approval.</div>
         </div>
       </section>
 
@@ -288,7 +1198,7 @@ export default function AdminPage() {
 
                   setSelectedContestId(result.contest.id);
                   setMessage(`Created contest ${result.contest.id}`);
-                  await loadAdminData(session.accessToken);
+                  await loadAdminData(session.accessToken, session.isPlatformAdmin);
                 } catch (createError) {
                   setError(createError instanceof Error ? createError.message : "Contest creation failed");
                 }
@@ -420,7 +1330,7 @@ export default function AdminPage() {
                       ...current,
                       seq: String(Number(current.seq) + 1)
                     }));
-                    await loadAdminData(session.accessToken);
+                    await loadAdminData(session.accessToken, session.isPlatformAdmin);
                   } catch (questionError) {
                     setError(questionError instanceof Error ? questionError.message : "Question add failed");
                   }
@@ -433,7 +1343,12 @@ export default function AdminPage() {
             <button
               type="button"
               className="ghost-button"
-              disabled={!selectedContestId}
+              disabled={
+                !selectedContestId ||
+                !selectedContest ||
+                Number(selectedContest.question_count) < 1 ||
+                selectedContest.status !== "draft"
+              }
               onClick={() => {
                 if (!selectedContestId) {
                   return;
@@ -446,7 +1361,7 @@ export default function AdminPage() {
                   try {
                     await publishContest(session.accessToken, selectedContestId);
                     setMessage(`Published contest ${selectedContestId}`);
-                    await loadAdminData(session.accessToken);
+                    await loadAdminData(session.accessToken, session.isPlatformAdmin);
                   } catch (publishError) {
                     setError(publishError instanceof Error ? publishError.message : "Publish failed");
                   }
@@ -455,6 +1370,9 @@ export default function AdminPage() {
             >
               Publish Selected Contest
             </button>
+            {selectedContest && Number(selectedContest.question_count) < 1 ? (
+              <div className="muted">Add at least 1 question before publishing this contest.</div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -462,9 +1380,6 @@ export default function AdminPage() {
       <div className="grid two" style={{ marginTop: 22 }}>
         <div className="card">
           <div className="eyebrow">Contest Monitor</div>
-          <div className="hero-note muted">
-            Recovery and cache rebuild stay visible here, while the full contest archive opens only when you ask for it.
-          </div>
           <div className="list" style={{ marginTop: 16 }}>
             {visibleContests.map((contest) => (
               <div key={contest.id} className="contest-card">
@@ -475,6 +1390,10 @@ export default function AdminPage() {
                       <span className="pill">{contest.status}</span>
                       <span className="pill gold">Prize Rs {contest.prize_pool}</span>
                       <span className="pill rose">{contest.member_count} joined</span>
+                      <span className="pill">{contest.question_count} questions</span>
+                      {contest.status !== "draft" ? (
+                        <span className="pill gold">Start Job: {contest.start_job_status}</span>
+                      ) : null}
                     </div>
                   </div>
                   <div className="stack-row">
@@ -489,7 +1408,7 @@ export default function AdminPage() {
                           try {
                             await recoverContest(session.accessToken, contest.id);
                             setMessage(`Recovery triggered for ${contest.id}`);
-                            await loadAdminData(session.accessToken);
+                            await loadAdminData(session.accessToken, session.isPlatformAdmin);
                           } catch (recoverError) {
                             setError(recoverError instanceof Error ? recoverError.message : "Recover failed");
                           }
@@ -510,7 +1429,7 @@ export default function AdminPage() {
                           try {
                             await rebuildContestCache(session.accessToken, contest.id);
                             setMessage(`Rebuilt cache for ${contest.id}`);
-                            await loadAdminData(session.accessToken);
+                            await loadAdminData(session.accessToken, session.isPlatformAdmin);
                           } catch (rebuildError) {
                             setError(rebuildError instanceof Error ? rebuildError.message : "Cache rebuild failed");
                           }
@@ -521,7 +1440,7 @@ export default function AdminPage() {
                     </button>
 
                     {contest.status === "ended" ? (
-                      <Link href={`/contests/${contest.id}/leaderboard`} className="solid-button">
+                      <Link href={buildTenantPath(tenantSlug, `/contests/${contest.id}/leaderboard`)} className="solid-button">
                         View Result
                       </Link>
                     ) : null}
@@ -581,7 +1500,7 @@ export default function AdminPage() {
                         try {
                           const result = await retryJob(session.accessToken, job.queue, job.job_id);
                           setMessage(`Job action complete: ${result.mode}`);
-                          await loadAdminData(session.accessToken);
+                          await loadAdminData(session.accessToken, session.isPlatformAdmin);
                         } catch (retryError) {
                           setError(retryError instanceof Error ? retryError.message : "Job retry failed");
                         }
@@ -600,7 +1519,7 @@ export default function AdminPage() {
       <div className="grid two" style={{ marginTop: 22 }}>
         <div className="card">
           <div className="eyebrow">Manage Wallets</div>
-          <h3 style={{ marginTop: 16, marginBottom: 10 }}>Approve add-money requests before balances change</h3>
+          <h3 style={{ marginTop: 16, marginBottom: 10 }}>Approve add-money and redeem requests before balances change</h3>
           <div className="list" style={{ marginTop: 16 }}>
             {walletRequests.length === 0 ? (
               <div className="notice warn">No wallet requests yet.</div>
@@ -614,6 +1533,7 @@ export default function AdminPage() {
                     <div className="muted">{walletRequest.user_email}</div>
                   </div>
                   <div className="pill-row">
+                    <span className="pill">{walletRequest.request_type === "add_money" ? "Add Money" : "Redeem"}</span>
                     <span className="pill gold">Rs {walletRequest.amount}</span>
                     <span className="pill">{walletRequest.status}</span>
                   </div>
@@ -640,7 +1560,7 @@ export default function AdminPage() {
                             setMessage(
                               `Approved request for ${result.user_name}. Wallet is now Rs ${result.wallet_balance}.`
                             );
-                            await loadAdminData(session.accessToken);
+                            await loadAdminData(session.accessToken, session.isPlatformAdmin);
                           } catch (reviewError) {
                             setError(reviewError instanceof Error ? reviewError.message : "Approval failed");
                           }
@@ -664,7 +1584,7 @@ export default function AdminPage() {
                               "rejected"
                             );
                             setMessage(`Rejected request for ${result.user_name}.`);
-                            await loadAdminData(session.accessToken);
+                            await loadAdminData(session.accessToken, session.isPlatformAdmin);
                           } catch (reviewError) {
                             setError(reviewError instanceof Error ? reviewError.message : "Rejection failed");
                           }
@@ -724,7 +1644,7 @@ export default function AdminPage() {
                     Number(walletForm.amount)
                   );
                   setMessage(`Wallet credited. New balance Rs ${result.wallet_balance}`);
-                  await loadAdminData(session.accessToken);
+                  await loadAdminData(session.accessToken, session.isPlatformAdmin);
                 } catch (creditError) {
                   setError(creditError instanceof Error ? creditError.message : "Wallet credit failed");
                 }
@@ -737,9 +1657,6 @@ export default function AdminPage() {
 
         <div className="card">
           <div className="eyebrow">Users</div>
-          <div className="hero-note muted">
-            Quick visibility into wallet state, admin access, and account flags while you test contest flows.
-          </div>
           <div className="list" style={{ marginTop: 16 }}>
             {users.map((user) => (
               <div key={user.id} className="notice">
@@ -750,10 +1667,32 @@ export default function AdminPage() {
                   </div>
                   <div className="pill-row">
                     <span className="pill gold">Rs {user.wallet_balance}</span>
+                    {user.user_type ? <span className="pill">{user.user_type}</span> : null}
                     {user.is_admin ? <span className="pill">Admin</span> : null}
                     {user.is_banned ? <span className="pill rose">Banned</span> : null}
                   </div>
                 </div>
+                {user.id !== session.userId ? (
+                  <div className="stack-row" style={{ marginTop: 12 }}>
+                    <button
+                      type="button"
+                      className="rose-button"
+                      onClick={() => {
+                        void (async () => {
+                          try {
+                            await deleteAdminUser(session.accessToken, user.id);
+                            setMessage(`Removed ${user.name} from this organization`);
+                            await loadAdminData(session.accessToken, session.isPlatformAdmin);
+                          } catch (userError) {
+                            setError(userError instanceof Error ? userError.message : "User removal failed");
+                          }
+                        })();
+                      }}
+                    >
+                      Remove User
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -793,10 +1732,14 @@ export default function AdminPage() {
                         <span className="pill">{contest.status}</span>
                         <span className="pill gold">Prize Rs {contest.prize_pool}</span>
                         <span className="pill rose">{contest.member_count} joined</span>
+                        <span className="pill">{contest.question_count} questions</span>
+                        {contest.status !== "draft" ? (
+                          <span className="pill gold">Start Job: {contest.start_job_status}</span>
+                        ) : null}
                       </div>
                     </div>
                     {contest.status === "ended" ? (
-                      <Link href={`/contests/${contest.id}/leaderboard`} className="solid-button">
+                      <Link href={buildTenantPath(tenantSlug, `/contests/${contest.id}/leaderboard`)} className="solid-button">
                         View Result
                       </Link>
                     ) : null}

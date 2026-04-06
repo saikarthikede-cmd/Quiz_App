@@ -4,6 +4,11 @@ export interface FrontendSession {
   name: string;
   userId: string;
   isAdmin: boolean;
+  isPlatformAdmin: boolean;
+  tenantSlug: string;
+  onboardingCompleted: boolean;
+  userType?: "individual" | "student" | "employee" | null;
+  membershipType?: string | null;
 }
 
 const SESSION_KEY = "quiz-app-frontend-session";

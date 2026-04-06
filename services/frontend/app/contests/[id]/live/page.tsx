@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 
@@ -10,6 +10,7 @@ import { SiteShell } from "../../../../components/site-shell";
 import { useFrontendSession } from "../../../../components/session-panel";
 import { getOpenContests } from "../../../../lib/api";
 import { GAME_URL } from "../../../../lib/config";
+import { buildTenantPath } from "../../../../lib/tenant";
 
 type Option = "a" | "b" | "c" | "d";
 
@@ -33,13 +34,16 @@ interface LeaderboardEntry {
 }
 
 export default function LiveContestPage() {
-  const params = useParams<{ id: string }>();
+  const params = useParams<{ slug?: string; id: string }>();
+  const router = useRouter();
+  const tenantSlug = typeof params.slug === "string" ? params.slug : null;
   const contestId = params.id;
   const { session, isReady } = useFrontendSession();
 
   const socketRef = useRef<Socket | null>(null);
   const [status, setStatus] = useState("Waiting for socket connection...");
   const [question, setQuestion] = useState<QuestionPayload | null>(null);
+  const questionRef = useRef<QuestionPayload | null>(null);
   const [selectedOption, setSelectedOption] = useState<Option | null>(null);
   const [answerResult, setAnswerResult] = useState<{ is_correct: boolean; your_score: number } | null>(null);
   const [reveal, setReveal] = useState<Option | null>(null);
@@ -49,6 +53,7 @@ export default function LiveContestPage() {
   const [prizeAmount, setPrizeAmount] = useState("0.00");
   const [youWon, setYouWon] = useState(false);
   const [socketError, setSocketError] = useState<string | null>(null);
+  const [socketDisconnected, setSocketDisconnected] = useState(false);
   const [contestStartsAtMs, setContestStartsAtMs] = useState<number | null>(null);
   const [waitingCountdown, setWaitingCountdown] = useState(0);
   const [answeredCount, setAnsweredCount] = useState(0);
@@ -57,7 +62,17 @@ export default function LiveContestPage() {
   const answeredQuestionRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
-    if (!session?.accessToken) {
+    if (!isReady) {
+      return;
+    }
+
+    if (!tenantSlug) {
+      router.replace("/");
+    }
+  }, [isReady, router, tenantSlug]);
+
+  useEffect(() => {
+    if (!session?.accessToken || !tenantSlug) {
       return;
     }
 
@@ -78,6 +93,7 @@ export default function LiveContestPage() {
     socket.on("connect", () => {
       setStatus(`Connected to contest ${contestId}`);
       setSocketError(null);
+      setSocketDisconnected(false);
     });
 
     socket.on("connect_error", (error) => {
@@ -85,8 +101,20 @@ export default function LiveContestPage() {
       setStatus("Socket connection failed");
     });
 
+    socket.on("disconnect", () => {
+      setSocketDisconnected(true);
+      setStatus("Disconnected - attempting to reconnect...");
+    });
+
     socket.on("reconnected", (payload) => {
-      setStatus(`Reconnected to live state on question ${payload.current_q}`);
+      setSocketDisconnected(false);
+      setStatus(`Reconnected - question ${payload.current_q} is live`);
+      if (payload.question) {
+        questionRef.current = payload.question as QuestionPayload;
+        setQuestion(payload.question as QuestionPayload);
+        setIsExamModalOpen(true);
+        setShowSummaryModal(false);
+      }
       setTimeRemaining(payload.time_remaining ?? 0);
     });
 
@@ -95,6 +123,7 @@ export default function LiveContestPage() {
     });
 
     socket.on("question", (payload: QuestionPayload) => {
+      questionRef.current = payload;
       setQuestion(payload);
       setIsExamModalOpen(true);
       setShowSummaryModal(false);
@@ -108,20 +137,22 @@ export default function LiveContestPage() {
 
     socket.on("answer_result", (payload) => {
       setAnswerResult(payload);
-      if (question && !answeredQuestionRef.current.has(question.seq)) {
-        answeredQuestionRef.current.add(question.seq);
+      const currentQuestion = questionRef.current;
+      if (currentQuestion && !answeredQuestionRef.current.has(currentQuestion.seq)) {
+        answeredQuestionRef.current.add(currentQuestion.seq);
         setAnsweredCount(answeredQuestionRef.current.size);
       }
-      setStatus(payload.is_correct ? "Answer recorded as correct" : "Answer recorded as wrong");
+      setStatus(payload.is_correct ? "Answer recorded as correct" : "Answer recorded");
     });
 
     socket.on("reveal", (payload: { correct_option: Option }) => {
       setReveal(payload.correct_option);
       setRevealCountdown(3);
-      setStatus(`Answer revealed for question ${question?.seq ?? payload.correct_option}`);
+      setStatus(`Answer revealed for question ${questionRef.current?.seq ?? "?"}`);
     });
 
     socket.on("contest_ended", (payload) => {
+      questionRef.current = null;
       setIsExamModalOpen(false);
       setLeaderboard(payload.leaderboard ?? []);
       setYouWon(Boolean(payload.you_won));
@@ -144,10 +175,10 @@ export default function LiveContestPage() {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [contestId, question, session?.accessToken]);
+  }, [contestId, session?.accessToken, tenantSlug]);
 
   useEffect(() => {
-    if (!session?.accessToken) {
+    if (!session?.accessToken || !tenantSlug) {
       return;
     }
 
@@ -172,7 +203,7 @@ export default function LiveContestPage() {
     return () => {
       active = false;
     };
-  }, [contestId, session?.accessToken]);
+  }, [contestId, session?.accessToken, tenantSlug]);
 
   useEffect(() => {
     if (!question) {
@@ -274,7 +305,18 @@ export default function LiveContestPage() {
         title="Live Contest"
         subtitle="Sign in before joining a live contest room."
       >
-        <LoginCard targetHref={`/contests/${contestId}/live`} />
+        <LoginCard
+          tenantSlug={tenantSlug}
+          targetHref={buildTenantPath(tenantSlug, `/contests/${contestId}/live`)}
+        />
+      </SiteShell>
+    );
+  }
+
+  if (!tenantSlug) {
+    return (
+      <SiteShell title="Live Contest" subtitle="Resolving organization workspace...">
+        <div className="notice">Redirecting to organization selection...</div>
       </SiteShell>
     );
   }
@@ -282,7 +324,7 @@ export default function LiveContestPage() {
   return (
       <SiteShell
         title="Live Contest Room"
-        subtitle="This room listens to the live Socket.io feed, tracks timing from server state, and stays visually focused while the contest advances."
+        subtitle=""
       >
         <div className="room-grid">
           <div className="room-stage live-waiting-stage">
@@ -303,9 +345,7 @@ export default function LiveContestPage() {
                   {question ? `${Math.ceil(timeRemaining / 1000)}s` : `${waitingCountdown}s`}
                 </div>
                 <div className="waiting-timer-copy">
-                  {question
-                    ? "The live question is already open in the exam window."
-                    : "Stay here while the contest clock counts down. The exam window will open automatically."}
+                  {question ? "Question is open in the exam window." : "Waiting for the contest to start."}
                 </div>
               </div>
             ) : null}
@@ -313,22 +353,18 @@ export default function LiveContestPage() {
 
           <div className="card">
             <div className="eyebrow">Live Status</div>
+            {socketDisconnected ? (
+              <div className="notice warn" style={{ marginTop: 14 }}>
+                Connection lost - reconnecting automatically. Your answers so far are saved.
+              </div>
+            ) : null}
             <div className="list" style={{ marginTop: 14 }}>
               <div className="notice">
-                Answered questions: <span className="mono">{answeredCount}</span>
-              </div>
-              <div className="notice">
-                Selected option: <span className="mono">{selectedOption ?? "-"}</span>
-              </div>
-              <div className="notice">
-                Reveal countdown: <span className="mono">{revealCountdown}s</span>
+                Questions answered: <span className="mono">{answeredCount}</span>
               </div>
               <div className="notice">
                 Prize if won: <span className="mono">Rs {prizeAmount}</span>
               </div>
-            </div>
-            <div className="hero-note muted">
-              Correct answers are not shown as a running score during the exam. They are revealed only in the final summary after the contest ends.
             </div>
           </div>
         </div>
@@ -356,18 +392,6 @@ export default function LiveContestPage() {
                 <h2 className="section-title" style={{ marginTop: 14 }}>
                   {question.body}
                 </h2>
-                <p className="muted">
-                  Choose one option before the timer closes. If your answer has been submitted, the reveal state will still behave exactly as before.
-                </p>
-
-                {answerResult ? (
-                  <div className={`notice ${answerResult.is_correct ? "success" : "warn"}`}>
-                    {answerResult.is_correct
-                      ? "Your answer is recorded. Final correct-count summary will appear after the contest ends."
-                      : "Your answer is recorded. Final correct-count summary will appear after the contest ends."}
-                  </div>
-                ) : null}
-
                 <div className="answer-grid" style={{ marginTop: 18 }}>
                   {options.map(([key, value]) => {
                     const isSelected = selectedOption === key;
@@ -456,10 +480,10 @@ export default function LiveContestPage() {
                 </div>
 
                 <div className="stack-row" style={{ marginTop: 16 }}>
-                  <Link href={`/contests/${contestId}/leaderboard`} className="solid-button">
+                  <Link href={buildTenantPath(tenantSlug, `/contests/${contestId}/leaderboard`)} className="solid-button">
                     Open Leaderboard Page
                   </Link>
-                  <Link href="/dashboard" className="ghost-button">
+                  <Link href={buildTenantPath(tenantSlug, "/dashboard")} className="ghost-button">
                     Back to Dashboard
                   </Link>
                 </div>

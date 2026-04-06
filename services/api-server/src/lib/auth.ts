@@ -13,7 +13,9 @@ const jwtKey = new TextEncoder().encode(config.jwtSecret);
 interface SessionUser {
   id: string;
   email: string;
+  tenant_id: string;
   is_admin: boolean;
+  is_platform_admin: boolean;
   is_banned: boolean;
 }
 
@@ -33,8 +35,10 @@ export async function issueAccessToken(user: SessionUser) {
   return new SignJWT({
     user_id: user.id,
     email: user.email,
+    tenant_id: user.tenant_id,
     is_banned: user.is_banned,
-    is_admin: user.is_admin
+    is_admin: user.is_admin,
+    is_platform_admin: user.is_platform_admin
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
@@ -51,7 +55,8 @@ export async function verifyAccessToken(token: string) {
   });
 
   return {
-    userId: String(payload.user_id)
+    userId: String(payload.user_id),
+    tenantId: String(payload.tenant_id)
   };
 }
 
@@ -80,7 +85,7 @@ export async function createSession(user: SessionUser, client?: TransactionClien
   };
 }
 
-export async function refreshSession(rawRefreshToken: string) {
+export async function refreshSession(rawRefreshToken: string, tenantId: string) {
   const refreshTokenHash = hashRefreshToken(rawRefreshToken);
 
   return withTransaction(async (client) => {
@@ -90,7 +95,9 @@ export async function refreshSession(rawRefreshToken: string) {
       expires_at: string;
       revoked_at: string | null;
       email: string;
+      tenant_id: string;
       is_admin: boolean;
+      is_platform_admin: boolean;
       is_banned: boolean;
     }>(
       `
@@ -100,7 +107,9 @@ export async function refreshSession(rawRefreshToken: string) {
           rt.expires_at,
           rt.revoked_at,
           u.email,
+          u.tenant_id,
           u.is_admin,
+          u.is_platform_admin,
           u.is_banned
         FROM refresh_tokens rt
         JOIN users u ON u.id = rt.user_id
@@ -115,6 +124,10 @@ export async function refreshSession(rawRefreshToken: string) {
     }
 
     const tokenRow = tokenResult.rows[0];
+
+    if (tokenRow.tenant_id !== tenantId && !tokenRow.is_platform_admin) {
+      return null;
+    }
 
     if (tokenRow.revoked_at || new Date(tokenRow.expires_at).getTime() < Date.now()) {
       return null;
@@ -134,7 +147,9 @@ export async function refreshSession(rawRefreshToken: string) {
       accessToken: await issueAccessToken({
         id: tokenRow.user_id,
         email: tokenRow.email,
+        tenant_id: tokenRow.tenant_id,
         is_admin: tokenRow.is_admin,
+        is_platform_admin: tokenRow.is_platform_admin,
         is_banned: tokenRow.is_banned
       }),
       refreshToken: nextRawToken
@@ -178,18 +193,66 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
 
   try {
     const payload = await verifyAccessToken(token);
-    const userResult = await pool.query<FastifyRequest["user"]>(
-      `
-        SELECT id, email, name, avatar_url, wallet_balance, is_admin, is_banned
-        FROM users
-        WHERE id = $1
-        LIMIT 1
-      `,
-      [payload.userId]
-    );
+    const userResult =
+      payload.tenantId === request.tenant.id
+        ? await pool.query<FastifyRequest["user"]>(
+            `
+              SELECT
+                id,
+                email,
+                name,
+                avatar_url,
+                wallet_balance,
+                is_admin,
+                is_platform_admin,
+                is_banned,
+                user_type,
+                username,
+                college_name,
+                student_id,
+                company_name,
+                membership_type,
+                entered_reference_id,
+                onboarding_completed
+              FROM users
+              WHERE id = $1
+                AND tenant_id = $2
+              LIMIT 1
+            `,
+            [payload.userId, request.tenant.id]
+          )
+        : await pool.query<FastifyRequest["user"]>(
+            `
+              SELECT
+                id,
+                email,
+                name,
+                avatar_url,
+                wallet_balance,
+                is_admin,
+                is_platform_admin,
+                is_banned,
+                user_type,
+                username,
+                college_name,
+                student_id,
+                company_name,
+                membership_type,
+                entered_reference_id,
+                onboarding_completed
+              FROM users
+              WHERE id = $1
+              LIMIT 1
+            `,
+            [payload.userId]
+          );
 
     if (userResult.rowCount !== 1) {
       return reply.code(401).send({ message: "User not found" });
+    }
+
+    if (payload.tenantId !== request.tenant.id && !userResult.rows[0].is_platform_admin) {
+      return reply.code(401).send({ message: "Access token does not match company context" });
     }
 
     if (userResult.rows[0].is_banned) {
@@ -212,5 +275,17 @@ export async function requireAdmin(request: FastifyRequest, reply: FastifyReply)
 
   if (!request.user.is_admin) {
     return reply.code(403).send({ message: "Admin access required" });
+  }
+}
+
+export async function requirePlatformAdmin(request: FastifyRequest, reply: FastifyReply) {
+  const authResult = await authenticate(request, reply);
+
+  if (authResult) {
+    return authResult;
+  }
+
+  if (!request.user.is_platform_admin) {
+    return reply.code(403).send({ message: "Platform admin access required" });
   }
 }

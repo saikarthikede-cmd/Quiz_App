@@ -90,6 +90,7 @@ const submitAnswerSchema = z.object({
 
 type SocketUser = {
   id: string;
+  tenantId: string;
   contestId: string;
 };
 
@@ -101,11 +102,21 @@ async function verifyToken(token: string) {
 
   return {
     userId: String(payload.user_id),
+    tenantId: String(payload.tenant_id),
     isBanned: Boolean(payload.is_banned)
   };
 }
 
-async function checkContestMembership(contestId: string, userId: string) {
+async function checkContestAccess(contestId: string, tenantId: string) {
+  const result = await pool.query(
+    "SELECT 1 FROM contests WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+    [contestId, tenantId]
+  );
+
+  return (result.rowCount ?? 0) > 0;
+}
+
+async function checkContestMembership(contestId: string, userId: string, tenantId: string) {
   try {
     const isMember = await runRedisWithRetry(() =>
       commandRedis.sismember(`contest:${contestId}:members`, userId)
@@ -113,14 +124,22 @@ async function checkContestMembership(contestId: string, userId: string) {
     return isMember === 1;
   } catch {
     const result = await pool.query(
-      "SELECT 1 FROM contest_members WHERE contest_id = $1 AND user_id = $2 LIMIT 1",
-      [contestId, userId]
+      `
+        SELECT 1
+        FROM contest_members cm
+        JOIN contests c ON c.id = cm.contest_id
+        WHERE cm.contest_id = $1
+          AND cm.user_id = $2
+          AND c.tenant_id = $3
+        LIMIT 1
+      `,
+      [contestId, userId, tenantId]
     );
     return (result.rowCount ?? 0) > 0;
   }
 }
 
-async function getContestState(contestId: string) {
+async function getContestState(contestId: string, tenantId: string) {
   try {
     const state = await runRedisWithRetry(() => commandRedis.hgetall(contestStateKey(contestId)));
 
@@ -143,9 +162,10 @@ async function getContestState(contestId: string) {
       SELECT current_q, q_started_at, status
       FROM contests
       WHERE id = $1
+        AND tenant_id = $2
       LIMIT 1
     `,
-    [contestId]
+    [contestId, tenantId]
   );
 
   if ((result.rowCount ?? 0) !== 1 || result.rows[0].status !== "live" || !result.rows[0].q_started_at) {
@@ -158,7 +178,7 @@ async function getContestState(contestId: string) {
   };
 }
 
-async function getQuestionData(contestId: string, seq: number) {
+async function getQuestionData(contestId: string, tenantId: string, seq: number) {
   try {
     const cached = await runRedisWithRetry(() => commandRedis.hgetall(contestQuestionKey(contestId, seq)));
 
@@ -192,11 +212,12 @@ async function getQuestionData(contestId: string, seq: number) {
   }>(
     `
       SELECT id, seq, body, option_a, option_b, option_c, option_d, correct_option, time_limit_sec
-      FROM questions
-      WHERE contest_id = $1 AND seq = $2
+      FROM questions q
+      JOIN contests c ON c.id = q.contest_id
+      WHERE q.contest_id = $1 AND q.seq = $2 AND c.tenant_id = $3
       LIMIT 1
     `,
-    [contestId, seq]
+    [contestId, seq, tenantId]
   );
 
   if (result.rowCount !== 1) {
@@ -206,7 +227,7 @@ async function getQuestionData(contestId: string, seq: number) {
   return result.rows[0];
 }
 
-async function hasAnswered(contestId: string, seq: number, userId: string) {
+async function hasAnswered(contestId: string, seq: number, userId: string, tenantId: string) {
   try {
     const alreadyAnswered = await runRedisWithRetry(() =>
       commandRedis.sismember(contestAnsweredKey(contestId, seq), userId)
@@ -218,18 +239,20 @@ async function hasAnswered(contestId: string, seq: number, userId: string) {
         SELECT 1
         FROM answers a
         JOIN questions q ON q.id = a.question_id
+        JOIN contests c ON c.id = a.contest_id
         WHERE a.contest_id = $1
           AND q.seq = $2
           AND a.user_id = $3
+          AND c.tenant_id = $4
         LIMIT 1
       `,
-      [contestId, seq, userId]
+      [contestId, seq, userId, tenantId]
     );
     return (result.rowCount ?? 0) > 0;
   }
 }
 
-async function getUserScore(contestId: string, userId: string) {
+async function getUserScore(contestId: string, userId: string, tenantId: string) {
   try {
     const cached = await runRedisWithRetry(() => commandRedis.hget(contestScoresKey(contestId), userId));
     if (cached !== null) {
@@ -242,10 +265,11 @@ async function getUserScore(contestId: string, userId: string) {
   const result = await pool.query<{ score: string }>(
     `
       SELECT COUNT(*) FILTER (WHERE is_correct = true)::text AS score
-      FROM answers
-      WHERE contest_id = $1 AND user_id = $2
+      FROM answers a
+      JOIN contests c ON c.id = a.contest_id
+      WHERE a.contest_id = $1 AND a.user_id = $2 AND c.tenant_id = $3
     `,
-    [contestId, userId]
+    [contestId, userId, tenantId]
   );
 
   return Number(result.rows[0]?.score ?? "0");
@@ -325,8 +349,13 @@ io.use(async (socket, next) => {
       return next(new Error("User is banned"));
     }
 
+    if (!(await checkContestAccess(contestId, payload.tenantId))) {
+      return next(new Error("Contest not found for tenant"));
+    }
+
     socket.data.user = {
       id: payload.userId,
+      tenantId: payload.tenantId,
       contestId
     } satisfies SocketUser;
 
@@ -341,10 +370,10 @@ io.on("connection", async (socket) => {
   const room = contestRoom(user.contestId);
   await socket.join(room);
 
-  const state = await getContestState(user.contestId);
+  const state = await getContestState(user.contestId, user.tenantId);
   if (state) {
-    const question = await getQuestionData(user.contestId, state.currentQ);
-    const score = await getUserScore(user.contestId, user.id);
+    const question = await getQuestionData(user.contestId, user.tenantId, state.currentQ);
+    const score = await getUserScore(user.contestId, user.id, user.tenantId);
     const timeRemaining = question
       ? Math.max(0, question.time_limit_sec * 1000 - (Date.now() - state.qStartedAtMs))
       : 0;
@@ -353,20 +382,36 @@ io.on("connection", async (socket) => {
       type: "reconnected",
       current_q: state.currentQ,
       score,
-      time_remaining: timeRemaining
+      time_remaining: timeRemaining,
+      question: question
+        ? {
+            seq: question.seq,
+            body: question.body,
+            option_a: question.option_a,
+            option_b: question.option_b,
+            option_c: question.option_c,
+            option_d: question.option_d,
+            time_limit_sec: question.time_limit_sec,
+            server_time: state.qStartedAtMs
+          }
+        : null
     });
   }
 
   socket.on("submit_answer", async (payload) => {
     try {
       const message = submitAnswerSchema.parse(payload);
-      const membership = await checkContestMembership(message.contest_id, user.id);
+      if (message.contest_id !== user.contestId) {
+        return socket.emit("error", { type: "error", code: "SERVER_ERROR" });
+      }
+
+      const membership = await checkContestMembership(message.contest_id, user.id, user.tenantId);
 
       if (!membership) {
         return socket.emit("error", { type: "error", code: "NOT_IN_CONTEST" });
       }
 
-      const stateInfo = await getContestState(message.contest_id);
+      const stateInfo = await getContestState(message.contest_id, user.tenantId);
       if (!stateInfo) {
         return socket.emit("error", { type: "error", code: "SERVER_ERROR" });
       }
@@ -375,7 +420,7 @@ io.on("connection", async (socket) => {
         return socket.emit("error", { type: "error", code: "TIME_UP" });
       }
 
-      const question = await getQuestionData(message.contest_id, message.question_seq);
+      const question = await getQuestionData(message.contest_id, user.tenantId, message.question_seq);
       if (!question) {
         return socket.emit("error", { type: "error", code: "SERVER_ERROR" });
       }
@@ -385,7 +430,7 @@ io.on("connection", async (socket) => {
         return socket.emit("error", { type: "error", code: "TIME_UP" });
       }
 
-      if (await hasAnswered(message.contest_id, message.question_seq, user.id)) {
+      if (await hasAnswered(message.contest_id, message.question_seq, user.id, user.tenantId)) {
         return socket.emit("error", { type: "error", code: "ALREADY_ANSWERED" });
       }
 
@@ -421,9 +466,10 @@ io.on("connection", async (socket) => {
           userId: user.id,
           error: redisWriteError instanceof Error ? redisWriteError.message : String(redisWriteError)
         });
+        return socket.emit("error", { type: "error", code: "SERVER_ERROR" });
       }
 
-      const yourScore = await getUserScore(message.contest_id, user.id);
+      const yourScore = await getUserScore(message.contest_id, user.id, user.tenantId);
       return socket.emit("answer_result", {
         type: "answer_result",
         is_correct: isCorrect,

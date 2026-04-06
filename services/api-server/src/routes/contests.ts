@@ -12,7 +12,7 @@ import { authenticate } from "../lib/auth.js";
 import { redis } from "../lib/redis.js";
 
 export async function contestRoutes(app: FastifyInstance) {
-  app.get("/contests", async () => {
+  app.get("/contests", async (request) => {
     const result = await pool.query<{
       id: string;
       title: string;
@@ -34,8 +34,10 @@ export async function contestRoutes(app: FastifyInstance) {
         FROM contests
         WHERE status = 'open'
           AND member_count < max_members
+          AND tenant_id = $1
         ORDER BY starts_at ASC
-      `
+      `,
+      [request.tenant.id]
     );
 
     return { contests: result.rows };
@@ -58,9 +60,10 @@ export async function contestRoutes(app: FastifyInstance) {
             SELECT id, title, status, entry_fee, max_members, member_count
             FROM contests
             WHERE id = $1
+              AND tenant_id = $2
             FOR UPDATE
           `,
-          [contestId]
+          [contestId, request.tenant.id]
         );
 
         if (contestResult.rowCount !== 1) {
@@ -108,7 +111,8 @@ export async function contestRoutes(app: FastifyInstance) {
           contestId,
           memberCount: contest.member_count + 1,
           prizePool: paiseToMoney((contest.member_count + 1) * entryFeePaise),
-          walletBalance: paiseToMoney(walletResult.balanceAfterPaise)
+          walletBalance: paiseToMoney(walletResult.balanceAfterPaise),
+          entryFeePaise
         };
       });
 
@@ -124,6 +128,7 @@ export async function contestRoutes(app: FastifyInstance) {
             JSON.stringify({
               type: "lobby_update",
               contest_id: contestId,
+              tenant_id: request.tenant.id,
               member_count: joined.memberCount,
               prize_pool: joined.prizePool
             })
@@ -131,6 +136,55 @@ export async function contestRoutes(app: FastifyInstance) {
         );
       } catch (redisError) {
         request.log.error({ err: redisError, contestId }, "Failed to sync contest join into Redis");
+        try {
+          await runRedisWithRetry(() => redis.srem(contestMembersKey(contestId), request.user.id));
+        } catch (cleanupError) {
+          request.log.error(
+            { err: cleanupError, contestId },
+            "Failed to remove contest membership from Redis during join rollback"
+          );
+        }
+
+        let compensated = false;
+        try {
+          await withTransaction(async (client) => {
+            await client.query(
+              "DELETE FROM contest_members WHERE contest_id = $1 AND user_id = $2",
+              [contestId, request.user.id]
+            );
+            await client.query(
+              `
+                UPDATE contests
+                SET member_count = GREATEST(member_count - 1, 0),
+                    updated_at = NOW()
+                WHERE id = $1
+              `,
+              [contestId]
+            );
+            await mutateWalletBalance(client, {
+              userId: request.user.id,
+              amountPaise: joined.entryFeePaise,
+              type: "credit",
+              reason: "refund",
+              referenceId: contestId,
+              metadata: {
+                source: "contest_join_sync_failure"
+              }
+            });
+          });
+          compensated = true;
+        } catch (rollbackError) {
+          request.log.error(
+            { err: rollbackError, contestId },
+            "Failed to compensate contest join after Redis sync failure — manual refund required"
+          );
+        }
+
+        return reply.code(500).send({
+          message: compensated
+            ? "Contest join could not be completed due to a temporary error. Your entry fee has been refunded to your wallet."
+            : "Contest join could not be completed due to a temporary error. Please contact support — your entry fee refund is being processed manually."
+        });
       }
 
       return {
@@ -152,8 +206,8 @@ export async function contestRoutes(app: FastifyInstance) {
   app.get("/contests/:id/leaderboard", async (request, reply) => {
     const contestId = String((request.params as { id: string }).id);
     const contestResult = await pool.query<{ status: string }>(
-      "SELECT status FROM contests WHERE id = $1 LIMIT 1",
-      [contestId]
+      "SELECT status FROM contests WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+      [contestId, request.tenant.id]
     );
 
     if (contestResult.rowCount !== 1) {

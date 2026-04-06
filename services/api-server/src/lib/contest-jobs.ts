@@ -13,9 +13,10 @@ export async function ensureContestJobs(contestId: string) {
     starts_at: string;
     current_q: number;
     q_started_at: string | null;
+    tenant_id: string;
   }>(
     `
-      SELECT id, status, starts_at, current_q, q_started_at
+      SELECT id, status, starts_at, current_q, q_started_at, tenant_id
       FROM contests
       WHERE id = $1
       LIMIT 1
@@ -46,7 +47,7 @@ export async function ensureContestJobs(contestId: string) {
     const delay = Math.max(0, new Date(contest.starts_at).getTime() - Date.now());
     await contestLifecycleQueue.add(
       contestLifecycleJobNames.startContest,
-      { contestId },
+      { contestId, tenantId: contest.tenant_id },
       {
         jobId: makeJobId(contestLifecycleJobNames.startContest, contestId),
         delay
@@ -75,7 +76,7 @@ export async function ensureContestJobs(contestId: string) {
   if (!currentQuestion.revealed_at) {
     await contestLifecycleQueue.add(
       contestLifecycleJobNames.revealQuestion,
-      { contestId, seq: contest.current_q },
+      { contestId, tenantId: contest.tenant_id, seq: contest.current_q },
       {
         jobId: makeJobId(contestLifecycleJobNames.revealQuestion, contestId, contest.current_q),
         delay: revealDelay
@@ -88,7 +89,7 @@ export async function ensureContestJobs(contestId: string) {
   if (nextQuestion) {
     await contestLifecycleQueue.add(
       contestLifecycleJobNames.broadcastQuestion,
-      { contestId, seq: nextQuestion.seq },
+      { contestId, tenantId: contest.tenant_id, seq: nextQuestion.seq },
       {
         jobId: makeJobId(contestLifecycleJobNames.broadcastQuestion, contestId, nextQuestion.seq),
         delay: revealDelay + 3000
@@ -99,7 +100,7 @@ export async function ensureContestJobs(contestId: string) {
 
   await contestLifecycleQueue.add(
     contestLifecycleJobNames.endContest,
-    { contestId },
+    { contestId, tenantId: contest.tenant_id },
     {
       jobId: makeJobId(contestLifecycleJobNames.endContest, contestId),
       delay: revealDelay + 3000

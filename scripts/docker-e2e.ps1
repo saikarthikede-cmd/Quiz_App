@@ -19,6 +19,29 @@ function Invoke-JsonPost($uri, $body, $headers = @{}) {
   Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -ContentType "application/json" -Body ($body | ConvertTo-Json -Compress)
 }
 
+function New-TestSession($email, $name, $tenantSlug = "default", $forceAdmin = $false, $forcePlatformAdmin = $false, $minimumBalance = 0) {
+  $raw = docker exec `
+    -e TEST_EMAIL=$email `
+    -e TEST_NAME=$name `
+    -e TEST_TENANT_SLUG=$tenantSlug `
+    -e TEST_FORCE_ADMIN=$(if ($forceAdmin) { "true" } else { "false" }) `
+    -e TEST_FORCE_PLATFORM_ADMIN=$(if ($forcePlatformAdmin) { "true" } else { "false" }) `
+    -e TEST_MIN_BALANCE=$minimumBalance `
+    quiz-app-api `
+    sh -lc "cd /app && pnpm test:create-session"
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "test:create-session failed with exit code $LASTEXITCODE"
+  }
+
+  $json = ($raw | Where-Object { $_ -and $_.Trim().StartsWith("{") } | Select-Object -Last 1)
+  if (-not $json) {
+    throw "test:create-session did not return JSON"
+  }
+
+  return ($json | ConvertFrom-Json)
+}
+
 function Wait-ForReady($uri, $label, $timeoutSeconds = 120) {
   $deadline = (Get-Date).AddSeconds($timeoutSeconds)
 
@@ -43,11 +66,8 @@ Wait-ForReady $frontendUrl "Frontend"
 Wait-ForReady $gamePollingUrl "Game server"
 
 Write-Step "Creating admin session"
-$adminLogin = Invoke-JsonPost "$apiBaseUrl/auth/dev-login" @{
-  email = $adminEmail
-  name = "Admin User"
-}
-$adminHeaders = @{ Authorization = "Bearer $($adminLogin.access_token)" }
+$adminLogin = New-TestSession $adminEmail "Admin User" "default" $true $true 0
+$adminHeaders = @{ Authorization = "Bearer $($adminLogin.access_token)"; "x-tenant-slug" = "default" }
 
 Write-Step "Creating fresh contest"
 $startsAt = [DateTime]::UtcNow.AddSeconds(35).ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -88,29 +108,22 @@ Write-Step "Publishing contest"
 Invoke-JsonPost "$apiBaseUrl/admin/contests/$contestId/publish" @{} $adminHeaders | Out-Null
 
 Write-Step "Joining player to contest"
-$playerLogin = Invoke-JsonPost "$apiBaseUrl/auth/dev-login" @{
-  email = $playerEmail
-  name = $playerName
-}
-$playerHeaders = @{ Authorization = "Bearer $($playerLogin.access_token)" }
+$playerLogin = New-TestSession $playerEmail $playerName "default" $false $false 100
+$playerHeaders = @{ Authorization = "Bearer $($playerLogin.access_token)"; "x-tenant-slug" = "default" }
 $joinResult = Invoke-JsonPost "$apiBaseUrl/contests/$contestId/join" @{} $playerHeaders
 Write-Host ("Join success: {0} | prize pool: Rs {1} | wallet: Rs {2}" -f $joinResult.success, $joinResult.prize_pool, $joinResult.wallet_balance)
 
 Write-Step "Running live socket flow"
 $previousEnv = @{
-  API_BASE_URL = $env:API_BASE_URL
   GAME_BASE_URL = $env:GAME_BASE_URL
-  TEST_EMAIL = $env:TEST_EMAIL
-  TEST_NAME = $env:TEST_NAME
+  TEST_ACCESS_TOKEN = $env:TEST_ACCESS_TOKEN
   TEST_CONTEST_ID = $env:TEST_CONTEST_ID
   TEST_ANSWERS = $env:TEST_ANSWERS
 }
 
 try {
-  $env:API_BASE_URL = $apiBaseUrl
   $env:GAME_BASE_URL = "http://127.0.0.1:4001"
-  $env:TEST_EMAIL = $playerEmail
-  $env:TEST_NAME = $playerName
+  $env:TEST_ACCESS_TOKEN = $playerLogin.access_token
   $env:TEST_CONTEST_ID = $contestId
   $env:TEST_ANSWERS = "b,b"
 

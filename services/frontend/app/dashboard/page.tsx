@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { LoginCard } from "../../components/login-card";
@@ -8,12 +9,17 @@ import { SiteShell } from "../../components/site-shell";
 import { useFrontendSession } from "../../components/session-panel";
 import {
   getOpenContests,
+  getMyAccessRequests,
+  getUserRanking,
   getWalletBalance,
   getWalletLedger,
   joinContest,
+  requestAdminAccess,
   requestAddMoney,
-  redeemMoney
+  requestExit,
+  requestRedeem
 } from "../../lib/api";
+import { buildTenantPath } from "../../lib/tenant";
 
 interface ContestItem {
   id: string;
@@ -37,13 +43,26 @@ interface WalletLedgerEntry {
   created_at: string;
 }
 
+interface RankingEntry {
+  user_id: string;
+  name: string;
+  rank: string;
+}
+
+interface AccessRequestEntry {
+  id: string;
+  request_type: "admin_access" | "exit";
+  status: "pending" | "approved" | "rejected";
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  reviewed_at: string | null;
+}
+
 type WalletActionMode = "add" | "redeem";
 
 interface WalletActionForm {
   amount: string;
-  holderName: string;
-  bankName: string;
-  accountNumber: string;
 }
 
 function wait(ms: number) {
@@ -53,9 +72,8 @@ function wait(ms: number) {
 function formatReason(reason: string) {
   switch (reason) {
     case "topup":
+    case "manual_topup":
       return "Add Money";
-    case "redeem":
-      return "Redeem";
     case "entry_fee":
       return "Contest Join";
     case "prize":
@@ -68,9 +86,14 @@ function formatReason(reason: string) {
 }
 
 export default function DashboardPage() {
+  const params = useParams<{ slug?: string }>();
+  const router = useRouter();
+  const tenantSlug = typeof params.slug === "string" ? params.slug : null;
   const { session, isReady } = useFrontendSession();
   const [walletBalance, setWalletBalance] = useState<string>("0.00");
   const [walletLedger, setWalletLedger] = useState<WalletLedgerEntry[]>([]);
+  const [ranking, setRanking] = useState<RankingEntry[]>([]);
+  const [accessRequests, setAccessRequests] = useState<AccessRequestEntry[]>([]);
   const [contests, setContests] = useState<ContestItem[]>([]);
   const [contestLookupId, setContestLookupId] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -81,10 +104,7 @@ export default function DashboardPage() {
   const [pageLoading, setPageLoading] = useState(false);
   const latestLoadId = useRef(0);
   const [walletActionForm, setWalletActionForm] = useState<WalletActionForm>({
-    amount: "50",
-    holderName: "",
-    bankName: "",
-    accountNumber: ""
+    amount: "50"
   });
 
   async function loadData(accessToken: string) {
@@ -93,10 +113,12 @@ export default function DashboardPage() {
     setError(null);
 
     try {
-      const [walletResult, contestResult, ledgerResult] = await Promise.all([
+      const [walletResult, contestResult, ledgerResult, rankingResult, requestsResult] = await Promise.all([
         getWalletBalance(accessToken),
         getOpenContests(),
-        getWalletLedger(accessToken)
+        getWalletLedger(accessToken),
+        getUserRanking(accessToken),
+        getMyAccessRequests(accessToken)
       ]);
 
       if (loadId !== latestLoadId.current) {
@@ -106,6 +128,8 @@ export default function DashboardPage() {
       setWalletBalance(walletResult.wallet_balance);
       setContests(contestResult.contests);
       setWalletLedger(ledgerResult.ledger);
+      setRanking(rankingResult.ranking);
+      setAccessRequests(requestsResult.requests);
     } catch (loadError) {
       if (loadId !== latestLoadId.current) {
         return;
@@ -120,12 +144,23 @@ export default function DashboardPage() {
   }
 
   useEffect(() => {
-    if (!session?.accessToken) {
+    if (!isReady) {
+      return;
+    }
+
+    if (!tenantSlug) {
+      router.replace("/");
+      return;
+    }
+  }, [isReady, router, tenantSlug]);
+
+  useEffect(() => {
+    if (!session?.accessToken || !tenantSlug) {
       return;
     }
 
     void loadData(session.accessToken);
-  }, [session]);
+  }, [session, tenantSlug]);
 
   if (!isReady) {
     return (
@@ -135,13 +170,21 @@ export default function DashboardPage() {
     );
   }
 
+  if (!tenantSlug) {
+    return (
+      <SiteShell title="Player Dashboard" subtitle="Resolving organization workspace...">
+        <div className="notice">Redirecting to organization selection...</div>
+      </SiteShell>
+    );
+  }
+
   if (!session) {
     return (
       <SiteShell
         title="Player Dashboard"
-        subtitle="Sign in with a valid email address to use wallet, contests, and live gameplay."
+        subtitle="Sign in with Google to use wallet, contests, and live gameplay."
       >
-        <LoginCard targetHref="/dashboard" />
+        <LoginCard tenantSlug={tenantSlug} targetHref={buildTenantPath(tenantSlug, "/dashboard")} />
       </SiteShell>
     );
   }
@@ -149,23 +192,90 @@ export default function DashboardPage() {
   return (
     <SiteShell
       title="Player Dashboard"
-      subtitle="Manage your wallet, track the ledger, and move into live contests with a cleaner player-ready control surface."
+      subtitle="Manage your wallet, track the ledger, and move into live contests from a faster player control surface built for quick decisions."
     >
+      <section className="spotlight-card" style={{ marginBottom: 20 }}>
+        <div className="spotlight-grid">
+          <div className="spotlight-copy">
+            <div className="eyebrow">Player Control Surface</div>
+            <h2 className="spotlight-title">Move from balance to contest room without losing momentum.</h2>
+            <p className="muted hero-kicker">
+              Keep wallet requests, quick contest lookup, and org ranking close together so the next action is always visible.
+            </p>
+            <div className="spotlight-actions">
+              <button
+                type="button"
+                className="solid-button"
+                onClick={() => {
+                  setWalletModalMode("add");
+                  setWalletActionForm((current) => ({
+                    ...current,
+                    amount: "50"
+                  }));
+                }}
+              >
+                Add Money
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  setWalletModalMode("redeem");
+                  setWalletActionForm((current) => ({
+                    ...current,
+                    amount: "50"
+                  }));
+                }}
+              >
+                Redeem
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setWalletLedgerOpen(true)}
+              >
+                History
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={pageLoading}
+                onClick={() => {
+                  void loadData(session.accessToken);
+                }}
+              >
+                {pageLoading ? "Refreshing..." : "Refresh Dashboard"}
+              </button>
+            </div>
+          </div>
+
+          <div className="spotlight-stats">
+            <div className="rail-card">
+              <div className="rail-label">Wallet</div>
+              <div className="rail-value">Rs {walletBalance}</div>
+              <div className="rail-copy">Current balance available for contest joins and future payouts.</div>
+            </div>
+            <div className="rail-card">
+              <div className="rail-label">Contest Window</div>
+              <div className="rail-value">{contests.length} open now</div>
+              <div className="rail-copy">Live-ready rooms with lobby tracking and leaderboard follow-through.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section className="signal-grid" style={{ marginBottom: 20 }}>
         <div className="signal-card">
-          <div className="signal-label">Wallet Signal</div>
+          <div className="signal-label">Wallet Balance</div>
           <div className="signal-value">Rs {walletBalance}</div>
-          <div className="signal-subtitle">Available balance ready for entries, payouts, and manual local top-ups.</div>
         </div>
         <div className="signal-card gold">
           <div className="signal-label">Open Contests</div>
           <div className="signal-value">{contests.length}</div>
-          <div className="signal-subtitle">Any contest with status open and remaining seats appears here automatically.</div>
         </div>
         <div className="signal-card rose">
-          <div className="signal-label">Access Mode</div>
-          <div className="signal-value">{session.isAdmin ? "Dual" : "Player"}</div>
-          <div className="signal-subtitle">Signed in as {session.name}, with live-room shortcuts and persistent local session data.</div>
+          <div className="signal-label">Signed in as</div>
+          <div className="signal-value">{session.name}</div>
         </div>
       </section>
 
@@ -175,58 +285,6 @@ export default function DashboardPage() {
             <div className="eyebrow">Wallet</div>
             <div className="stat-value">Rs {walletBalance}</div>
           </div>
-          <p className="muted">
-            Production-style wallet entries are tracked with before/after balances so every change stays auditable.
-          </p>
-        </div>
-
-        <div className="card accent-card">
-          <div className="eyebrow">Wallet Actions</div>
-          <h3 style={{ marginTop: 16, marginBottom: 8 }}>Add money or redeem in one guided flow</h3>
-          <p className="muted" style={{ marginTop: 0 }}>
-            Send an add-money request to admin or submit a redeem request with bank details. The wallet window stays in a clear processing state while each action completes.
-          </p>
-          <div className="stack-row" style={{ marginTop: 12 }}>
-            <button
-              type="button"
-              className="solid-button"
-              onClick={() => {
-                setWalletModalMode("add");
-                setWalletActionForm((current) => ({
-                  ...current,
-                  amount: "50"
-                }));
-              }}
-            >
-              Add Money
-            </button>
-            <button
-              type="button"
-              className="solid-button"
-              onClick={() => {
-                setWalletModalMode("redeem");
-                setWalletActionForm((current) => ({
-                  ...current,
-                  holderName: session.name,
-                  amount: "25"
-                }));
-              }}
-            >
-              Redeem
-            </button>
-            <button
-              type="button"
-              className="icon-button icon-only"
-              onClick={() => setWalletLedgerOpen(true)}
-              aria-label="View recent wallet activity"
-              title="Wallet history"
-            >
-              <span className="history-icon" aria-hidden="true">
-                <span />
-                <span />
-              </span>
-            </button>
-          </div>
         </div>
 
         <div className="card soft-card">
@@ -235,6 +293,7 @@ export default function DashboardPage() {
           <p className="muted mono">{session.email}</p>
           <div className="pill-row">
             <span className="pill">{session.isAdmin ? "Admin Access" : "Player Access"}</span>
+            <span className="pill gold">{session.userType ?? "unassigned"}</span>
             <button
               type="button"
               className="ghost-button"
@@ -246,13 +305,78 @@ export default function DashboardPage() {
               {pageLoading ? "Refreshing..." : "Refresh Data"}
             </button>
           </div>
+          {session.userType === "employee" && !session.isAdmin ? (
+            <div className="stack-row" style={{ marginTop: 14 }}>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  setMessage(null);
+                  setError(null);
+                  void (async () => {
+                    try {
+                      const result = await requestAdminAccess(session.accessToken);
+                      setMessage(result.message);
+                      await loadData(session.accessToken);
+                    } catch (requestError) {
+                      setError(requestError instanceof Error ? requestError.message : "Admin request failed");
+                    }
+                  })();
+                }}
+              >
+                Request Admin Access
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  setMessage(null);
+                  setError(null);
+                  void (async () => {
+                    try {
+                      const result = await requestExit(session.accessToken);
+                      setMessage(result.message);
+                      await loadData(session.accessToken);
+                    } catch (requestError) {
+                      setError(requestError instanceof Error ? requestError.message : "Exit request failed");
+                    }
+                  })();
+                }}
+              >
+                Request Exit
+              </button>
+            </div>
+          ) : null}
+          {session.userType === "employee" && session.isAdmin ? (
+            <div className="stack-row" style={{ marginTop: 14 }}>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  setMessage(null);
+                  setError(null);
+                  void (async () => {
+                    try {
+                      const result = await requestExit(session.accessToken);
+                      setMessage(result.message);
+                      await loadData(session.accessToken);
+                    } catch (requestError) {
+                      setError(requestError instanceof Error ? requestError.message : "Exit request failed");
+                    }
+                  })();
+                }}
+              >
+                Request Exit
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
 
       <div className="grid two" style={{ marginTop: 18 }}>
         <div className="card soft-card">
           <div className="eyebrow">Quick Open</div>
-          <h3 style={{ marginTop: 16, marginBottom: 8 }}>Jump by contest ID without losing momentum</h3>
+          <h3 style={{ marginTop: 16, marginBottom: 8 }}>Open by contest ID</h3>
           <label className="field" style={{ marginTop: 12 }}>
             <span>Contest ID</span>
             <input
@@ -263,45 +387,76 @@ export default function DashboardPage() {
           </label>
           <div className="stack-row">
             <Link
-              href={contestLookupId ? `/contests/${contestLookupId}/live` : "/dashboard"}
+              href={contestLookupId ? buildTenantPath(tenantSlug, `/contests/${contestLookupId}/live`) : buildTenantPath(tenantSlug, "/dashboard")}
               className="ghost-button"
             >
               Open Live Room
             </Link>
             <Link
-              href={contestLookupId ? `/contests/${contestLookupId}/leaderboard` : "/dashboard"}
+              href={contestLookupId ? buildTenantPath(tenantSlug, `/contests/${contestLookupId}/leaderboard`) : buildTenantPath(tenantSlug, "/dashboard")}
               className="solid-button"
             >
-              Open Leaderboard
+              View Leaderboard
             </Link>
           </div>
         </div>
 
-        <div className="card accent-card">
-          <div className="eyebrow">Player Runbook</div>
-          <div className="command-list" style={{ marginTop: 16 }}>
-            <div className="command-item">
-              <strong>Top Up</strong>
-              <span className="muted">Use the add-money window before joining if your wallet is low, then check the ledger to confirm the entry.</span>
-            </div>
-            <div className="command-item">
-              <strong>Join</strong>
-              <span className="muted">Entry is debited instantly and the live room receives lobby updates through sockets.</span>
-            </div>
-            <div className="command-item">
-              <strong>Review</strong>
-              <span className="muted">Paste any ended contest UUID above to open the leaderboard without going back to the terminal.</span>
-            </div>
+        <div className="card soft-card">
+          <div className="eyebrow">Org Ranking</div>
+          <h3 style={{ marginTop: 16, marginBottom: 8 }}>Top users in your organization</h3>
+          <p className="muted" style={{ marginBottom: 14 }}>
+            Ranked across your current organization workspace.
+          </p>
+          <div className="rank-list">
+            {ranking.length === 0 ? (
+              <div className="notice">No user ranking available yet.</div>
+            ) : null}
+
+            {ranking.map((entry) => (
+              <div key={entry.user_id} className="rank-row">
+                <div className="rank-index">{entry.rank}</div>
+                <div className="rank-name">
+                  <strong>{entry.name}</strong>
+                  <div className="rank-subtitle">Organization leaderboard</div>
+                </div>
+                <span className="pill gold">Top {entry.rank}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
+
+      {accessRequests.length > 0 ? (
+        <div className="card soft-card" style={{ marginTop: 18 }}>
+          <div className="eyebrow">My Requests</div>
+          <div className="list" style={{ marginTop: 16 }}>
+            {accessRequests.slice(0, 4).map((entry) => (
+              <div key={entry.id} className="notice">
+                <div className="stack-row spread">
+                  <div>
+                    <strong>{entry.request_type === "admin_access" ? "Admin access" : "Exit request"}</strong>
+                    <div className="muted">{new Date(entry.created_at).toLocaleString()}</div>
+                  </div>
+                  <div className="pill-row">
+                    <span className="pill">{entry.status}</span>
+                    {entry.reviewed_at ? (
+                      <span className="pill gold">Reviewed</span>
+                    ) : null}
+                  </div>
+                </div>
+                {entry.notes ? <div className="muted" style={{ marginTop: 8 }}>{entry.notes}</div> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {message ? <div className="notice success" style={{ marginTop: 18 }}>{message}</div> : null}
       {error ? <div className="notice error" style={{ marginTop: 18 }}>{error}</div> : null}
 
       <section style={{ marginTop: 22 }}>
-        <div className="stack-row spread">
-          <div>
+        <div className="section-head">
+          <div className="section-head-copy">
             <div className="eyebrow">Open Contests</div>
             <h2 className="section-title">Join what is live next</h2>
           </div>
@@ -353,7 +508,7 @@ export default function DashboardPage() {
                     Join Contest
                   </button>
 
-                  <Link href={`/contests/${contest.id}/live`} className="ghost-button">
+                  <Link href={buildTenantPath(tenantSlug, `/contests/${contest.id}/live`)} className="ghost-button">
                     Open Live View
                   </Link>
                 </div>
@@ -362,13 +517,6 @@ export default function DashboardPage() {
               <p className="muted" style={{ marginBottom: 0 }}>
                 Starts at {new Date(contest.starts_at).toLocaleString()}
               </p>
-              <div className="subtle-divider" />
-              <p className="muted" style={{ marginTop: 0, marginBottom: 0 }}>
-                Prize pool expands automatically with each confirmed join, and the worker carries the room into live state at the scheduled time.
-              </p>
-              <div className="mono" style={{ marginTop: 10, fontSize: "0.84rem" }}>
-                {contest.id}
-              </div>
             </article>
           ))}
         </div>
@@ -381,7 +529,7 @@ export default function DashboardPage() {
               <div className="processing-overlay">
                 <div className="processing-card">
                   <span className="spinner" aria-hidden="true" />
-                  <strong>{walletModalMode === "add" ? "Sending add-money request" : "Processing redeem"}</strong>
+                  <strong>Sending add-money request</strong>
                   <span className="muted">
                     Please wait while the wallet action is completed.
                   </span>
@@ -393,7 +541,9 @@ export default function DashboardPage() {
               <div>
                 <div className="eyebrow">{walletModalMode === "add" ? "Add Money" : "Redeem"}</div>
                 <h3 style={{ marginTop: 14, marginBottom: 8 }}>
-                  {walletModalMode === "add" ? "Send an approval request to admin" : "Complete the redeem request"}
+                  {walletModalMode === "add"
+                    ? "Send an approval request to admin"
+                    : "Send a redeem request for admin approval"}
                 </h3>
               </div>
               <button
@@ -418,48 +568,12 @@ export default function DashboardPage() {
                 />
               </label>
 
-              {walletModalMode === "redeem" ? (
-                <>
-                  <label className="field">
-                    <span>Holder Name</span>
-                    <input
-                      value={walletActionForm.holderName}
-                      disabled={walletActionPending}
-                      onChange={(event) =>
-                        setWalletActionForm((current) => ({ ...current, holderName: event.target.value }))
-                      }
-                    />
-                  </label>
-
-                  <label className="field">
-                    <span>Bank Name</span>
-                    <input
-                      value={walletActionForm.bankName}
-                      disabled={walletActionPending}
-                      onChange={(event) =>
-                        setWalletActionForm((current) => ({ ...current, bankName: event.target.value }))
-                      }
-                    />
-                  </label>
-
-                  <label className="field">
-                    <span>Bank Account Number</span>
-                    <input
-                      value={walletActionForm.accountNumber}
-                      disabled={walletActionPending}
-                      onChange={(event) =>
-                        setWalletActionForm((current) => ({ ...current, accountNumber: event.target.value }))
-                      }
-                    />
-                  </label>
-                </>
-              ) : null}
             </div>
 
             <div className="stack-row" style={{ marginTop: 8 }}>
               <button
                 type="button"
-                className={walletModalMode === "add" ? "solid-button" : "rose-button"}
+                className="solid-button"
                 disabled={walletActionPending}
                 onClick={() => {
                   if (walletActionPending) {
@@ -479,26 +593,12 @@ export default function DashboardPage() {
                       }
 
                       await wait(2000);
-
                       if (walletModalMode === "add") {
                         await requestAddMoney(session.accessToken, amountValue);
                         setMessage("Add-money request sent to admin.");
                       } else {
-                        if (
-                          !walletActionForm.holderName ||
-                          !walletActionForm.bankName ||
-                          !walletActionForm.accountNumber
-                        ) {
-                          throw new Error("Please fill all bank details.");
-                        }
-
-                        await redeemMoney(session.accessToken, {
-                          amount: amountValue,
-                          holder_name: walletActionForm.holderName,
-                          bank_name: walletActionForm.bankName,
-                          account_number: walletActionForm.accountNumber
-                        });
-                        setMessage("Redeem completed successfully.");
+                        await requestRedeem(session.accessToken, amountValue);
+                        setMessage("Redeem request sent to admin.");
                       }
 
                       await loadData(session.accessToken);
@@ -513,9 +613,7 @@ export default function DashboardPage() {
               >
                 {walletActionPending
                   ? "Processing..."
-                  : walletModalMode === "add"
-                    ? "Send Request"
-                    : "Submit Redeem"}
+                  : "Send Request"}
               </button>
 
               <button

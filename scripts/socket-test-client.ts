@@ -1,14 +1,12 @@
 import { io } from "socket.io-client";
 
-const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:4000";
 const gameBaseUrl = process.env.GAME_BASE_URL ?? "http://localhost:4001";
-const email = process.env.TEST_EMAIL;
-const name = process.env.TEST_NAME ?? "Socket Test User";
 const contestId = process.env.TEST_CONTEST_ID;
+const token = process.env.TEST_ACCESS_TOKEN;
 const answersRaw = process.env.TEST_ANSWERS ?? "";
 
-if (!email || !contestId) {
-  console.error("Missing TEST_EMAIL or TEST_CONTEST_ID.");
+if (!token || !contestId) {
+  console.error("Missing TEST_ACCESS_TOKEN or TEST_CONTEST_ID.");
   process.exit(1);
 }
 
@@ -17,28 +15,7 @@ const answers = answersRaw
   .map((entry) => entry.trim())
   .filter(Boolean);
 
-async function loginAndGetToken() {
-  const response = await fetch(`${apiBaseUrl}/auth/dev-login`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({
-      email,
-      name
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`Login failed with status ${response.status}`);
-  }
-
-  const data = (await response.json()) as { access_token: string };
-  return data.access_token;
-}
-
 async function main() {
-  const token = await loginAndGetToken();
   const socket = io(gameBaseUrl, {
     transports: ["websocket"],
     auth: {

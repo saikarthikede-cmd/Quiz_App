@@ -1,4 +1,4 @@
-import { mutateWalletBalance, withTransaction } from "@quiz-app/db";
+import { pool, withTransaction } from "@quiz-app/db";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
@@ -8,48 +8,64 @@ const walletAmountSchema = z.object({
   amount: z.number().positive().max(100000)
 });
 
-const walletActionSchema = walletAmountSchema.extend({
-  holder_name: z.string().min(2).max(120),
-  bank_name: z.string().min(2).max(120),
-  account_number: z.string().min(6).max(40)
-});
-
 export async function walletRoutes(app: FastifyInstance) {
   app.get("/wallet/balance", { preHandler: authenticate }, async (request) => ({
     wallet_balance: request.user.wallet_balance
   }));
 
+  app.get("/users/ranking", async (request) => {
+    const result = await pool.query<{
+      user_id: string;
+      name: string;
+      rank: string;
+    }>(
+      `
+        SELECT
+          id AS user_id,
+          name,
+          DENSE_RANK() OVER (ORDER BY wallet_balance::numeric DESC, created_at ASC) ::text AS rank
+        FROM users
+        WHERE tenant_id = $1
+        ORDER BY wallet_balance::numeric DESC, created_at ASC
+        LIMIT 10
+      `,
+      [request.tenant.id]
+    );
+
+    return {
+      ranking: result.rows
+    };
+  });
+
   app.get("/wallet/ledger", { preHandler: authenticate }, async (request) => {
-    const result = await withTransaction(async (client) =>
-      client.query<{
-        id: string;
-        type: string;
-        reason: string;
-        amount: string;
-        balance_before: string;
-        balance_after: string;
-        reference_id: string | null;
-        metadata: Record<string, unknown> | null;
-        created_at: string;
-      }>(
-        `
-          SELECT
-            id,
-            type,
-            reason,
-            amount,
-            balance_before,
-            balance_after,
-            reference_id,
-            metadata,
-            created_at
-          FROM wallet_transactions
-          WHERE user_id = $1
-          ORDER BY created_at DESC
-          LIMIT 50
-        `,
-        [request.user.id]
-      )
+    const result = await pool.query<{
+      id: string;
+      type: string;
+      reason: string;
+      amount: string;
+      balance_before: string;
+      balance_after: string;
+      reference_id: string | null;
+      metadata: Record<string, unknown> | null;
+      created_at: string;
+    }>(
+      `
+        SELECT
+          id,
+          type,
+          reason,
+          amount,
+          balance_before,
+          balance_after,
+          reference_id,
+          metadata,
+          created_at
+        FROM wallet_transactions
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 50
+      `,
+      [request.user.id]
     );
 
     return { ledger: result.rows };
@@ -61,16 +77,17 @@ export async function walletRoutes(app: FastifyInstance) {
     const result = await withTransaction(async (client) => {
       const requestResult = await client.query<{
         id: string;
+        request_type: "add_money";
         amount: string;
         status: "pending";
         created_at: string;
       }>(
         `
-          INSERT INTO wallet_topup_requests (user_id, amount)
-          VALUES ($1, $2)
-          RETURNING id, amount, status, created_at
+          INSERT INTO wallet_requests (user_id, company_id, request_type, amount)
+          VALUES ($1, $2, 'add_money', $3)
+          RETURNING id, request_type, amount, status, created_at
         `,
-        [request.user.id, body.amount.toFixed(2)]
+        [request.user.id, request.tenant.id, body.amount.toFixed(2)]
       );
 
       return requestResult.rows[0];
@@ -83,35 +100,32 @@ export async function walletRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post("/wallet/redeem", { preHandler: authenticate }, async (request, reply) => {
-    const body = walletActionSchema.parse(request.body);
+  app.post("/wallet/redeem", { preHandler: authenticate }, async (request) => {
+    const body = walletAmountSchema.parse(request.body);
 
-    try {
-      const result = await withTransaction(async (client) =>
-        mutateWalletBalance(client, {
-          userId: request.user.id,
-          amountPaise: Math.round(body.amount * 100),
-          type: "debit",
-          reason: "redeem",
-          metadata: {
-            source: "temporary_redeem_button",
-            holderName: body.holder_name,
-            bankName: body.bank_name,
-            accountNumber: body.account_number
-          }
-        })
+    const result = await withTransaction(async (client) => {
+      const requestResult = await client.query<{
+        id: string;
+        request_type: "redeem";
+        amount: string;
+        status: "pending";
+        created_at: string;
+      }>(
+        `
+          INSERT INTO wallet_requests (user_id, company_id, request_type, amount)
+          VALUES ($1, $2, 'redeem', $3)
+          RETURNING id, request_type, amount, status, created_at
+        `,
+        [request.user.id, request.tenant.id, body.amount.toFixed(2)]
       );
 
-      return {
-        success: true,
-        wallet_balance: (result.balanceAfterPaise / 100).toFixed(2)
-      };
-    } catch (error) {
-      if (error instanceof Error && error.name === "INSUFFICIENT_BALANCE") {
-        return reply.code(402).send({ message: "Insufficient wallet balance" });
-      }
+      return requestResult.rows[0];
+    });
 
-      throw error;
-    }
+    return {
+      success: true,
+      request: result,
+      message: "Redeem request sent to admin for approval"
+    };
   });
 }

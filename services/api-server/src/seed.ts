@@ -1,8 +1,11 @@
 import { pool } from "@quiz-app/db";
 
 async function seed() {
+  const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001";
+
   const existingContest = await pool.query<{ id: string }>(
-    "SELECT id FROM contests WHERE title = 'General Knowledge Sprint' LIMIT 1"
+    "SELECT id FROM contests WHERE title = 'General Knowledge Sprint' AND tenant_id = $1 LIMIT 1",
+    [DEFAULT_TENANT_ID]
   );
 
   const contestId =
@@ -10,10 +13,11 @@ async function seed() {
     (
       await pool.query<{ id: string }>(
         `
-          INSERT INTO contests (title, status, entry_fee, max_members, starts_at, prize_rule)
-          VALUES ('General Knowledge Sprint', 'draft', '10.00', 100, NOW() + INTERVAL '30 minutes', 'all_correct')
+          INSERT INTO contests (title, status, entry_fee, max_members, starts_at, prize_rule, tenant_id)
+          VALUES ('General Knowledge Sprint', 'draft', '10.00', 100, NOW() + INTERVAL '30 minutes', 'all_correct', $1)
           RETURNING id
-        `
+        `,
+        [DEFAULT_TENANT_ID]
       )
     ).rows[0].id;
 

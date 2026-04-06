@@ -34,6 +34,24 @@ await redis.connect();
 
 const makeJobId = (...parts: Array<string | number>) => parts.join("__");
 
+async function getContestTenantId(contestId: string) {
+  const result = await pool.query<{ tenant_id: string }>(
+    "SELECT tenant_id FROM contests WHERE id = $1 LIMIT 1",
+    [contestId]
+  );
+
+  return result.rowCount === 1 ? result.rows[0].tenant_id : null;
+}
+
+async function assertContestTenant(contestId: string, tenantId: string) {
+  const actualTenantId = await getContestTenantId(contestId);
+  return actualTenantId !== null && actualTenantId === tenantId;
+}
+
+async function resolveTenantId(contestId: string, tenantId?: string) {
+  return tenantId && tenantId.length > 0 ? tenantId : await getContestTenantId(contestId);
+}
+
 function alertFailure(jobName: string, contestId: string, error: unknown) {
   console.error("ALERT: job failure", {
     jobName,
@@ -42,12 +60,13 @@ function alertFailure(jobName: string, contestId: string, error: unknown) {
   });
 }
 
-async function publishContestEvent(contestId: string, payload: Record<string, unknown>) {
+async function publishContestEvent(contestId: string, tenantId: string, payload: Record<string, unknown>) {
   await redis.publish(
     contestChannel(contestId),
     JSON.stringify({
       ...payload,
-      contest_id: contestId
+      contest_id: contestId,
+      tenant_id: tenantId
     })
   );
 }
@@ -120,7 +139,68 @@ async function cacheContestQuestions(contestId: string, questions: Awaited<Retur
   await multi.exec();
 }
 
-async function scheduleNextJobs(contestId: string, questions: Awaited<ReturnType<typeof getContestQuestions>>, seq: number) {
+async function cacheContestAnswerState(
+  contestId: string,
+  questions: Awaited<ReturnType<typeof getContestQuestions>>
+) {
+  const [scoresResult, answeredResult] = await Promise.all([
+    pool.query<{ user_id: string; correct_count: string }>(
+      `
+        SELECT user_id, COUNT(*) FILTER (WHERE is_correct = true)::text AS correct_count
+        FROM answers
+        WHERE contest_id = $1
+        GROUP BY user_id
+      `,
+      [contestId]
+    ),
+    pool.query<{ seq: number; user_id: string }>(
+      `
+        SELECT q.seq, a.user_id
+        FROM answers a
+        JOIN questions q ON q.id = a.question_id
+        WHERE a.contest_id = $1
+        ORDER BY q.seq ASC, a.answered_at ASC
+      `,
+      [contestId]
+    )
+  ]);
+
+  const multi = redis.multi();
+  multi.del(contestScoresKey(contestId));
+  for (const question of questions) {
+    multi.del(contestAnsweredKey(contestId, question.seq));
+  }
+
+  if (scoresResult.rows.length > 0) {
+    multi.hset(
+      contestScoresKey(contestId),
+      ...scoresResult.rows.flatMap((row) => [row.user_id, row.correct_count])
+    );
+  }
+
+  const answeredBySeq = new Map<number, string[]>();
+
+  for (const row of answeredResult.rows) {
+    const existing = answeredBySeq.get(row.seq) ?? [];
+    existing.push(row.user_id);
+    answeredBySeq.set(row.seq, existing);
+  }
+
+  for (const [seq, userIds] of answeredBySeq.entries()) {
+    if (userIds.length > 0) {
+      multi.sadd(contestAnsweredKey(contestId, seq), ...userIds);
+    }
+  }
+
+  await multi.exec();
+}
+
+async function scheduleNextJobs(
+  contestId: string,
+  tenantId: string,
+  questions: Awaited<ReturnType<typeof getContestQuestions>>,
+  seq: number
+) {
   const currentQuestion = questions.find((question) => question.seq === seq);
 
   if (!currentQuestion) {
@@ -129,7 +209,7 @@ async function scheduleNextJobs(contestId: string, questions: Awaited<ReturnType
 
   await contestLifecycleQueue.add(
     contestLifecycleJobNames.revealQuestion,
-    { contestId, seq },
+    { contestId, tenantId, seq },
     {
       jobId: makeJobId(contestLifecycleJobNames.revealQuestion, contestId, seq),
       delay: currentQuestion.time_limit_sec * 1000
@@ -141,7 +221,7 @@ async function scheduleNextJobs(contestId: string, questions: Awaited<ReturnType
   if (nextQuestion) {
     await contestLifecycleQueue.add(
       contestLifecycleJobNames.broadcastQuestion,
-      { contestId, seq: nextQuestion.seq },
+      { contestId, tenantId, seq: nextQuestion.seq },
       {
         jobId: makeJobId(contestLifecycleJobNames.broadcastQuestion, contestId, nextQuestion.seq),
         delay: currentQuestion.time_limit_sec * 1000 + 3000
@@ -152,7 +232,7 @@ async function scheduleNextJobs(contestId: string, questions: Awaited<ReturnType
 
   await contestLifecycleQueue.add(
     contestLifecycleJobNames.endContest,
-    { contestId },
+    { contestId, tenantId },
     {
       jobId: makeJobId(contestLifecycleJobNames.endContest, contestId),
       delay: currentQuestion.time_limit_sec * 1000 + 3000
@@ -160,13 +240,17 @@ async function scheduleNextJobs(contestId: string, questions: Awaited<ReturnType
   );
 }
 
-async function startContest(contestId: string) {
+async function startContest(contestId: string, tenantId: string) {
   const contestResult = await pool.query<{
     status: string;
   }>("SELECT status FROM contests WHERE id = $1 LIMIT 1", [contestId]);
 
   if (contestResult.rowCount !== 1) {
     return { skipped: true, reason: "contest-missing" };
+  }
+
+  if (!(await assertContestTenant(contestId, tenantId))) {
+    return { skipped: true, reason: "tenant-mismatch" };
   }
 
   if (contestResult.rows[0].status === "live") {
@@ -196,7 +280,7 @@ async function startContest(contestId: string) {
   await cacheContestState(contestId, 1, qStartedAtMs);
 
   const firstQuestion = questions[0];
-  await publishContestEvent(contestId, {
+  await publishContestEvent(contestId, tenantId, {
     type: "question",
     seq: firstQuestion.seq,
     body: firstQuestion.body,
@@ -208,12 +292,16 @@ async function startContest(contestId: string) {
     server_time: qStartedAtMs
   });
 
-  await scheduleNextJobs(contestId, questions, 1);
+  await scheduleNextJobs(contestId, tenantId, questions, 1);
 
   return { success: true };
 }
 
-async function revealQuestion(contestId: string, seq: number) {
+async function revealQuestion(contestId: string, tenantId: string, seq: number) {
+  if (!(await assertContestTenant(contestId, tenantId))) {
+    return { skipped: true, reason: "tenant-mismatch" };
+  }
+
   const contestResult = await pool.query<{ current_q: number }>(
     "SELECT current_q FROM contests WHERE id = $1 LIMIT 1",
     [contestId]
@@ -255,7 +343,7 @@ async function revealQuestion(contestId: string, seq: number) {
     // Fall back to Postgres value already loaded above.
   }
 
-  await publishContestEvent(contestId, {
+  await publishContestEvent(contestId, tenantId, {
     type: "reveal",
     seq,
     correct_option: correctOption
@@ -269,7 +357,11 @@ async function revealQuestion(contestId: string, seq: number) {
   return { success: true };
 }
 
-async function broadcastQuestion(contestId: string, seq: number) {
+async function broadcastQuestion(contestId: string, tenantId: string, seq: number) {
+  if (!(await assertContestTenant(contestId, tenantId))) {
+    return { skipped: true, reason: "tenant-mismatch" };
+  }
+
   const contestResult = await pool.query<{ current_q: number }>(
     "SELECT current_q FROM contests WHERE id = $1 LIMIT 1",
     [contestId]
@@ -304,7 +396,7 @@ async function broadcastQuestion(contestId: string, seq: number) {
   const qStartedAtMs = Date.now();
   await cacheContestState(contestId, seq, qStartedAtMs);
 
-  await publishContestEvent(contestId, {
+  await publishContestEvent(contestId, tenantId, {
     type: "question",
     seq: question.seq,
     body: question.body,
@@ -316,12 +408,16 @@ async function broadcastQuestion(contestId: string, seq: number) {
     server_time: qStartedAtMs
   });
 
-  await scheduleNextJobs(contestId, questions, seq);
+  await scheduleNextJobs(contestId, tenantId, questions, seq);
 
   return { success: true };
 }
 
-async function endContest(contestId: string) {
+async function endContest(contestId: string, tenantId: string) {
+  if (!(await assertContestTenant(contestId, tenantId))) {
+    return { skipped: true, reason: "tenant-mismatch" };
+  }
+
   const contestResult = await pool.query<{
     status: string;
     member_count: number;
@@ -345,17 +441,8 @@ async function endContest(contestId: string) {
     return { skipped: true, reason: "already-ended" };
   }
 
-  await pool.query(
-    `
-      UPDATE contests
-      SET status = 'ended',
-          ended_at = NOW(),
-          updated_at = NOW()
-      WHERE id = $1
-    `,
-    [contestId]
-  );
-
+  // Query all data needed for payout before marking ended — so a query failure
+  // doesn't leave the contest ended with no payouts and no way to retry.
   const questions = await getContestQuestions(contestId);
   const totalQuestions = questions.length;
 
@@ -386,6 +473,18 @@ async function endContest(contestId: string) {
         COUNT(*) FILTER (WHERE a.is_correct = true) DESC,
         MAX(a.answered_at) ASC NULLS LAST,
         cm.joined_at ASC
+    `,
+    [contestId]
+  );
+
+  // All data fetched — now safe to mark ended
+  await pool.query(
+    `
+      UPDATE contests
+      SET status = 'ended',
+          ended_at = NOW(),
+          updated_at = NOW()
+      WHERE id = $1
     `,
     [contestId]
   );
@@ -423,10 +522,13 @@ async function endContest(contestId: string) {
   );
 
   if (winners.length > 0 && prizePoolPaise > 0) {
+    const payoutOrder = [...winners].sort(
+      (left, right) => new Date(left.joined_at).getTime() - new Date(right.joined_at).getTime()
+    );
     const basePrizePaise = Math.floor(prizePoolPaise / winners.length);
     let remainderPaise = prizePoolPaise - basePrizePaise * winners.length;
 
-    for (const winner of winners) {
+    for (const winner of payoutOrder) {
       const prizeAmountPaise = basePrizePaise + (remainderPaise > 0 ? remainderPaise : 0);
       remainderPaise = 0;
       const prizeAmount = paiseToMoney(prizeAmountPaise);
@@ -446,6 +548,7 @@ async function endContest(contestId: string) {
         payoutJobNames.prizeCredit,
         {
           contestId,
+          tenantId,
           userId: winner.user_id
         },
         {
@@ -455,7 +558,7 @@ async function endContest(contestId: string) {
     }
   }
 
-  await publishContestEvent(contestId, {
+  await publishContestEvent(contestId, tenantId, {
     type: "contest_ended",
     leaderboard: await pool
       .query<{
@@ -505,7 +608,11 @@ async function endContest(contestId: string) {
   return { success: true, winners: Object.keys(winnerPrizeMap).length };
 }
 
-async function refundContest(contestId: string) {
+async function refundContest(contestId: string, tenantId: string) {
+  if (!(await assertContestTenant(contestId, tenantId))) {
+    return { skipped: true, reason: "tenant-mismatch" };
+  }
+
   const contestResult = await pool.query<{ status: string }>(
     "SELECT status FROM contests WHERE id = $1 LIMIT 1",
     [contestId]
@@ -534,6 +641,7 @@ async function refundContest(contestId: string) {
       payoutJobNames.refund,
       {
         contestId,
+        tenantId,
         userId: member.user_id
       },
       {
@@ -547,6 +655,15 @@ async function refundContest(contestId: string) {
 
 async function prizeCredit(job: Job<PrizeCreditJobPayload>) {
   const { contestId, userId } = job.data;
+  const tenantId = await resolveTenantId(contestId, (job.data as Partial<PrizeCreditJobPayload>).tenantId);
+
+  if (!tenantId) {
+    return { skipped: true, reason: "tenant-missing" };
+  }
+
+  if (!(await assertContestTenant(contestId, tenantId))) {
+    return { skipped: true, reason: "tenant-mismatch" };
+  }
   const existingResult = await pool.query(
     `
       SELECT 1
@@ -593,6 +710,15 @@ async function prizeCredit(job: Job<PrizeCreditJobPayload>) {
 
 async function refund(job: Job<RefundJobPayload>) {
   const { contestId, userId } = job.data;
+  const tenantId = await resolveTenantId(contestId, (job.data as Partial<RefundJobPayload>).tenantId);
+
+  if (!tenantId) {
+    return { skipped: true, reason: "tenant-missing" };
+  }
+
+  if (!(await assertContestTenant(contestId, tenantId))) {
+    return { skipped: true, reason: "tenant-mismatch" };
+  }
 
   if (!userId) {
     throw new Error("Refund job missing userId");
@@ -638,9 +764,9 @@ async function refund(job: Job<RefundJobPayload>) {
 }
 
 async function recoverJobsOnStartup() {
-  const openContests = await pool.query<{ id: string; starts_at: string }>(
+  const openContests = await pool.query<{ id: string; starts_at: string; tenant_id: string }>(
     `
-      SELECT id, starts_at
+      SELECT id, starts_at, tenant_id
       FROM contests
       WHERE status = 'open'
         AND starts_at BETWEEN NOW() AND NOW() + INTERVAL '10 minutes'
@@ -653,7 +779,7 @@ async function recoverJobsOnStartup() {
     if (!existing) {
       await contestLifecycleQueue.add(
         contestLifecycleJobNames.startContest,
-        { contestId: contest.id },
+        { contestId: contest.id, tenantId: contest.tenant_id },
         {
           jobId,
           delay: Math.max(0, new Date(contest.starts_at).getTime() - Date.now())
@@ -662,9 +788,14 @@ async function recoverJobsOnStartup() {
     }
   }
 
-  const liveContests = await pool.query<{ id: string; current_q: number; q_started_at: string | null }>(
+  const liveContests = await pool.query<{
+    id: string;
+    tenant_id: string;
+    current_q: number;
+    q_started_at: string | null;
+  }>(
     `
-      SELECT id, current_q, q_started_at
+      SELECT id, tenant_id, current_q, q_started_at
       FROM contests
       WHERE status = 'live'
     `
@@ -673,6 +804,7 @@ async function recoverJobsOnStartup() {
   for (const contest of liveContests.rows) {
     const questions = await getContestQuestions(contest.id);
     await cacheContestQuestions(contest.id, questions);
+    await cacheContestAnswerState(contest.id, questions);
 
     if (contest.current_q > 0 && contest.q_started_at) {
       await cacheContestState(
@@ -696,7 +828,7 @@ async function recoverJobsOnStartup() {
       if (!existingReveal && !currentQuestion.revealed_at) {
         await contestLifecycleQueue.add(
           contestLifecycleJobNames.revealQuestion,
-          { contestId: contest.id, seq: contest.current_q },
+          { contestId: contest.id, tenantId: contest.tenant_id, seq: contest.current_q },
           { jobId: revealJobId, delay: revealDelay }
         );
       }
@@ -712,7 +844,7 @@ async function recoverJobsOnStartup() {
         if (!existingBroadcast) {
           await contestLifecycleQueue.add(
             contestLifecycleJobNames.broadcastQuestion,
-            { contestId: contest.id, seq: nextQuestion.seq },
+            { contestId: contest.id, tenantId: contest.tenant_id, seq: nextQuestion.seq },
             { jobId: nextJobId, delay: revealDelay + 3000 }
           );
         }
@@ -722,7 +854,7 @@ async function recoverJobsOnStartup() {
         if (!existingEnd) {
           await contestLifecycleQueue.add(
             contestLifecycleJobNames.endContest,
-            { contestId: contest.id },
+            { contestId: contest.id, tenantId: contest.tenant_id },
             { jobId: endJobId, delay: revealDelay + 3000 }
           );
         }
@@ -734,17 +866,26 @@ async function recoverJobsOnStartup() {
 const contestWorker = new Worker<ContestLifecycleJobPayload>(
   "contest-lifecycle",
   async (job) => {
+    const tenantId = await resolveTenantId(
+      job.data.contestId,
+      (job.data as Partial<ContestLifecycleJobPayload>).tenantId
+    );
+
+    if (!tenantId) {
+      return { skipped: true, reason: "tenant-missing" };
+    }
+
     switch (job.name) {
       case contestLifecycleJobNames.startContest:
-        return startContest(job.data.contestId);
+        return startContest(job.data.contestId, tenantId);
       case contestLifecycleJobNames.revealQuestion:
-        return revealQuestion(job.data.contestId, job.data.seq ?? 0);
+        return revealQuestion(job.data.contestId, tenantId, job.data.seq ?? 0);
       case contestLifecycleJobNames.broadcastQuestion:
-        return broadcastQuestion(job.data.contestId, job.data.seq ?? 0);
+        return broadcastQuestion(job.data.contestId, tenantId, job.data.seq ?? 0);
       case contestLifecycleJobNames.endContest:
-        return endContest(job.data.contestId);
+        return endContest(job.data.contestId, tenantId);
       case contestLifecycleJobNames.refundContest:
-        return refundContest(job.data.contestId);
+        return refundContest(job.data.contestId, tenantId);
       default:
         throw new Error(`Unsupported contest lifecycle job ${job.name}`);
     }
@@ -793,9 +934,14 @@ for (const worker of [contestWorker, payoutWorker]) {
       (job.name === contestLifecycleJobNames.startContest ||
         job.name === contestLifecycleJobNames.broadcastQuestion)
     ) {
+      const tenantId = await resolveTenantId(contestId, (job.data as Partial<ContestLifecycleJobPayload>).tenantId);
+      if (!tenantId) {
+        return;
+      }
+
       await contestLifecycleQueue.add(
         contestLifecycleJobNames.refundContest,
-        { contestId },
+        { contestId, tenantId },
         {
           jobId: makeJobId(contestLifecycleJobNames.refundContest, contestId)
         }

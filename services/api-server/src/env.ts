@@ -38,19 +38,8 @@ export const config = {
   jwtAudience: process.env.JWT_AUDIENCE ?? "quiz-app-users",
   accessTokenTtlMinutes: toNumber(process.env.ACCESS_TOKEN_TTL_MINUTES, 15),
   refreshTokenTtlDays: toNumber(process.env.REFRESH_TOKEN_TTL_DAYS, 30),
-  otpTtlMinutes: toNumber(process.env.AUTH_OTP_TTL_MINUTES, 5),
-  otpMaxAttempts: toNumber(process.env.AUTH_OTP_MAX_ATTEMPTS, 5),
-  otpDeliveryMode: process.env.AUTH_OTP_DELIVERY ?? "server_log",
-  otpExposeInResponse:
-    process.env.AUTH_OTP_EXPOSE_IN_RESPONSE !== undefined
-      ? process.env.AUTH_OTP_EXPOSE_IN_RESPONSE === "true"
-      : process.env.NODE_ENV !== "production",
-  otpAllowedEmails: parseCsv(process.env.AUTH_ALLOWED_EMAILS).map((value) => value.toLowerCase()),
-  otpAllowedDomains: parseCsv(process.env.AUTH_ALLOWED_EMAIL_DOMAINS).map((value) =>
-    value.toLowerCase()
-  ),
   cookieDomain: normalizeCookieDomain(process.env.COOKIE_DOMAIN),
   cookieSecure: process.env.COOKIE_SECURE === "true",
-  adminEmail: (process.env.ADMIN_EMAIL ?? "saikarthik.ede@fissionlabs.com").toLowerCase(),
-  googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() ?? ""
+  googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() ?? "",
+  mainAdminEmail: (process.env.MAIN_ADMIN_EMAIL ?? "saikarthik.ede@fissionlabs.com").trim().toLowerCase()
 };

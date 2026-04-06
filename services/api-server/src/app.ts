@@ -6,9 +6,11 @@ import { ZodError } from "zod";
 import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
 import { contestRoutes } from "./routes/contests.js";
+import { requestRoutes } from "./routes/requests.js";
 import { walletRoutes } from "./routes/wallet.js";
 import { config } from "./env.js";
 import { redis } from "./lib/redis.js";
+import { resolveTenant } from "./lib/tenant.js";
 
 function isAllowedDevOrigin(origin: string) {
   try {
@@ -31,6 +33,8 @@ export async function buildApp() {
   const allowedOrigins = new Set(config.frontendUrls);
 
   await app.register(cors, {
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Tenant-Slug"],
     origin(origin, callback) {
       if (!origin) {
         callback(null, true);
@@ -58,10 +62,16 @@ export async function buildApp() {
     service: "api-server"
   }));
 
-  await app.register(authRoutes);
-  await app.register(walletRoutes);
-  await app.register(contestRoutes);
-  await app.register(adminRoutes);
+  // All tenant-scoped routes run behind the tenant resolver.
+  // The resolver reads X-Tenant-Slug header (defaults to "default").
+  await app.register(async (tenantApp) => {
+    tenantApp.addHook("preHandler", resolveTenant);
+    await tenantApp.register(authRoutes);
+    await tenantApp.register(requestRoutes);
+    await tenantApp.register(walletRoutes);
+    await tenantApp.register(contestRoutes);
+    await tenantApp.register(adminRoutes);
+  });
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
